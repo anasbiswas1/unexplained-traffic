@@ -1,0 +1,5 @@
+mark,value,passed
+G1r,USA_cc_dpsk: api.deepseek.com; cc_dpsk: api.deepseek.com; cc_mimo: token-plan-cn.xiaomimimo.com; cc_xiaoai: xiaoai.plus; codex: 103.233.162.230; harness hosts: api.anthropic.com,True
+C1,"1 MB 0.502 [0.463, 0.541]; 10 MB 0.974 [0.961, 0.985]",True
+C2,"1 MB 0.000 [0.000, 0.000]; 10 MB 0.000 [0.000, 0.000]",True
+C3,0.0324,True

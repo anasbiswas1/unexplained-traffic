@@ -1,0 +1,7 @@
+agent,endpoint_01,endpoint_01b,changed,endpoint_run_share,endpoint_up_MB,endpoint_down_per_up,in_step_analysis
+USA_cc_dpsk,api.deepseek.com,api.deepseek.com,False,1.0,4022.158881,0.4922940270593453,True
+cc_dpsk,api.deepseek.com,api.deepseek.com,False,1.0,3420.549413,0.4713870797691061,True
+cc_mimo,token-plan-cn.xiaomimimo.com,token-plan-cn.xiaomimimo.com,False,0.997134670487106,1673.035772,0.07700570015068392,True
+cc_xiaoai,api.anthropic.com,xiaoai.plus,True,1.0,538.074705,0.17928314805283405,True
+codex,103.233.162.230,103.233.162.230,False,1.0,252.297841,1.6193188747897371,True
+qwen,dashscope.aliyuncs.com,dashscope.aliyuncs.com,False,0.9968,4610.221144,0.1682138142135075,False
