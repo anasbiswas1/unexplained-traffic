@@ -1,0 +1,36 @@
+{
+  "marks": {
+    "G0": "all expected episodes listed with both files; at least 99% extracted without error; in at least 95% of extracted episodes at least 95% of record start times inside the capture time span (1 s slack); at least 80% of upload bytes on TCP port 443 named",
+    "G1": "every agent folder has a named public host reached in at least 95% of its episodes; the one with the most upload bytes is its model endpoint",
+    "M1": "pooled over the 12 instance-disjoint leave-one-agent-out folds, 95% bootstrap interval of (matcher minus per-task allowlist) unexplained share of upload bytes inside logged steps entirely below zero",
+    "M2": "Claude Code folders pooled: matcher unexplained share of upload bytes inside logged steps at most 0.05",
+    "M3": "pooled over the folds, 95% bootstrap interval of (shuffled step types minus true step types) matcher unexplained share inside logged steps entirely above zero"
+  },
+  "settings": {
+    "expected_episodes": 3114,
+    "coarse_step_s": 30.0,
+    "rho": 0.05,
+    "smoothing": 20.0,
+    "budget_quantile": 0.99,
+    "min_cells": 30,
+    "common_share": 0.1,
+    "alpha": 0.05,
+    "n_boot": 2000,
+    "seed": 1,
+    "align_slack_s": 1.0,
+    "min_extracted": 0.99,
+    "min_aligned_episodes": 0.95,
+    "min_aligned_records": 0.95,
+    "min_named_tcp443": 0.8,
+    "min_endpoint_share": 0.95,
+    "m2_max": 0.05,
+    "inject_bytes": [
+      10000.0,
+      100000.0,
+      1000000.0,
+      10000000.0
+    ],
+    "probe_per_folder": 5,
+    "cc_prefix": "cc_"
+  }
+}

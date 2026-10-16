@@ -1,0 +1,9 @@
+{
+  "date": "2026-10-16",
+  "reason": "the probe stopped on G0 alignment. qwen records are unusable for timing: 479 of 625 runs have no records file, 116 carry placeholder start times equal to the message number in milliseconds after 1970-01-01, 30 carry real times (all business_services). Record and capture times agree in the other five folders",
+  "G0r": "at least 99% of listed runs extracted without error; among runs whose records carry real times, at least 95% have at least 95% of record start times inside the capture time span (1 s slack); at least 80% of upload bytes on TCP port 443 named",
+  "usable_run": "extracted; has records; record times after real_time_after; at least 95% of record start times inside the capture time span (1 s slack)",
+  "real_time_after": "2020-01-01",
+  "min_usable_folder_share": 0.5,
+  "decision": "G0r replaces G0 in the decision and G0 is reported; Stages D and E use usable runs of folders with at least half their runs usable; M1, M2 and M3 unchanged apart from the number of folds"
+}

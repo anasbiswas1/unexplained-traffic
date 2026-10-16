@@ -1,0 +1,7 @@
+agent,episodes,model_endpoint,endpoint_up_share,always_reached
+USA_cc_dpsk,642,api.deepseek.com,0.8080677059332843,"api.deepseek.com, api.anthropic.com"
+cc_dpsk,632,api.deepseek.com,0.6779070949134136,"api.deepseek.com, api.anthropic.com"
+cc_mimo,349,token-plan-cn.xiaomimimo.com,0.6392381674577094,"token-plan-cn.xiaomimimo.com, api.anthropic.com"
+cc_xiaoai,382,api.anthropic.com,0.5231401884483261,"api.anthropic.com, xiaoai.plus"
+codex,484,103.233.162.230,0.9944100904502742,"103.233.162.230, github.com, chatgpt.com, ab.chatgpt.com"
+qwen,625,dashscope.aliyuncs.com,0.9890910439082202,"dashscope.aliyuncs.com, gb4w8c3ygj-default-sea.rum.aliyuncs.com"
