@@ -1,0 +1,68 @@
+[
+ {
+  "check":"O1 request sizes",
+  "where":"offline",
+  "passed":true,
+  "detail":"15 uploads from 0 B to 1 MB (11 fixed-length, 4 chunked): logged length and upstream bytes exact for 15\/15; path prefix kept True; Host rewritten True"
+ },
+ {
+  "check":"O2 response sizes",
+  "where":"offline",
+  "passed":true,
+  "detail":"8 responses (0 B to 1 MB, fixed-length and chunked) relayed byte for byte and logged exactly: 8\/8"
+ },
+ {
+  "check":"O3 streaming",
+  "where":"offline",
+  "passed":true,
+  "detail":"8 events sent 250 ms apart over 1.75 s; each reached the client 0.3 to 0.7 ms after the endpoint sent it; first event arrived 1.75 s before the last was sent; gateway relayed 8 pieces"
+ },
+ {
+  "check":"O4 connection reuse",
+  "where":"offline",
+  "passed":true,
+  "detail":"5 sequential calls on one client connection used 1 upstream connection; 3 concurrent clients with 3 calls each used 3; every client connection kept a single upstream connection True"
+ },
+ {
+  "check":"O5 reconnect",
+  "where":"offline",
+  "passed":true,
+  "detail":"the endpoint answered with Connection: close and the gateway passed that header to the client (close); upstream close logged True; the client's next call on its kept connection returned 200; upstream connections 2; up_new on the calls [True, False, True]"
+ },
+ {
+  "check":"O6 idle close",
+  "where":"offline",
+  "passed":true,
+  "detail":"the endpoint dropped the kept connection 0.2 s after a call; the client's next call 0.6 s later on the same client connection returned 200; idle close logged True; upstream connections 2; up_new on the two calls [True, True]"
+ },
+ {
+  "check":"O7 client close",
+  "where":"offline",
+  "passed":true,
+  "detail":"client sent Connection: close; gateway closed its upstream connection (agent asked to close); endpoint saw the close True"
+ },
+ {
+  "check":"O8 no-body responses",
+  "where":"offline",
+  "passed":true,
+  "detail":"HEAD 200 with Content-Length 12345 and no body, then 204, then a sized call on the same connection: 200, one upstream connection True"
+ },
+ {
+  "check":"O9 expect-continue",
+  "where":"offline",
+  "passed":true,
+  "detail":"client got 100 Continue from the gateway, sent 50000 bytes, endpoint received 50000, logged 50000"
+ },
+ {
+  "check":"O10 TLS key log",
+  "where":"offline",
+  "passed":true,
+  "detail":"HTTPS upstream with verified certificate: sizes [0, 12345, 1000000] logged [0, 12345, 1000000]; one TLS connection True; key log lines ['CLIENT_HANDSHAKE_TRAFFIC_SECRET', 'CLIENT_TRAFFIC_SECRET_0', 'EXPORTER_SECRET', 'SERVER_HANDSHAKE_TRAFFIC_SECRET', 'SERVER_TRAFFIC_SECRET_0']"
+ },
+ {
+  "check":"O11 MCP tool log",
+  "where":"offline",
+  "passed":true,
+  "detail":"initialize, tools\/list and two tools\/call answered; word_count returned 5; args_bytes 39 (expected 39), msg_bytes exact True; path outside the workspace refused True"
+ }
+]

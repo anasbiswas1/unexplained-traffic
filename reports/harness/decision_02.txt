@@ -1,0 +1,13 @@
+DECISION: PASS (offline checks, run in Colab)
+
+PASS  O1 request sizes: 15 uploads from 0 B to 1 MB (11 fixed-length, 4 chunked): logged length and upstream bytes exact for 15/15; path prefix kept True; Host rewritten True
+PASS  O2 response sizes: 8 responses (0 B to 1 MB, fixed-length and chunked) relayed byte for byte and logged exactly: 8/8
+PASS  O3 streaming: 8 events sent 250 ms apart over 1.75 s; each reached the client 0.3 to 0.7 ms after the endpoint sent it; first event arrived 1.75 s before the last was sent; gateway relayed 8 pieces
+PASS  O4 connection reuse: 5 sequential calls on one client connection used 1 upstream connection; 3 concurrent clients with 3 calls each used 3; every client connection kept a single upstream connection True
+PASS  O5 reconnect: the endpoint answered with Connection: close and the gateway passed that header to the client (close); upstream close logged True; the client's next call on its kept connection returned 200; upstream connections 2; up_new on the calls [True, False, True]
+PASS  O6 idle close: the endpoint dropped the kept connection 0.2 s after a call; the client's next call 0.6 s later on the same client connection returned 200; idle close logged True; upstream connections 2; up_new on the two calls [True, True]
+PASS  O7 client close: client sent Connection: close; gateway closed its upstream connection (agent asked to close); endpoint saw the close True
+PASS  O8 no-body responses: HEAD 200 with Content-Length 12345 and no body, then 204, then a sized call on the same connection: 200, one upstream connection True
+PASS  O9 expect-continue: client got 100 Continue from the gateway, sent 50000 bytes, endpoint received 50000, logged 50000
+PASS  O10 TLS key log: HTTPS upstream with verified certificate: sizes [0, 12345, 1000000] logged [0, 12345, 1000000]; one TLS connection True; key log lines ['CLIENT_HANDSHAKE_TRAFFIC_SECRET', 'CLIENT_TRAFFIC_SECRET_0', 'EXPORTER_SECRET', 'SERVER_HANDSHAKE_TRAFFIC_SECRET', 'SERVER_TRAFFIC_SECRET_0']
+PASS  O11 MCP tool log: initialize, tools/list and two tools/call answered; word_count returned 5; args_bytes 39 (expected 39), msg_bytes exact True; path outside the workspace refused True
