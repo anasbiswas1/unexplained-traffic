@@ -17,6 +17,10 @@ the VM. Checks:
   O9 expect-continue    a client that waits for 100 Continue sends its body and is sized exactly
   O10 TLS key log       an HTTPS upstream works and its session keys reach the key log (needs the openssl command)
   O11 MCP tool log      tool calls are answered and their argument sizes logged exactly
+  O12 endpoint drop     an endpoint that drops a stream inside the body: the log keeps the bytes relayed before the
+                        drop and names the upstream side
+  O13 agent close       an agent that closes after the last event, before the end of the stream: the log keeps the
+                        bytes relayed and names the agent side
 With --agents, real agent clients run against the fake endpoint through the gateway, with the MCP tool server:
   A1 Claude Code (needs the claude command), A2 Codex (needs the codex command).
 
@@ -144,17 +148,22 @@ class FakeEndpoint:
                      + (b"" if method == "HEAD" else body))
         await writer.drain()
 
-    async def send_chunked(self, writer, pieces, ctype, gap=0.0, stream_id=None):
+    async def send_chunked(self, writer, pieces, ctype, gap=0.0, stream_id=None, end_gap=0.0, cut_after=None):
         writer.write(self.head(200, "OK", [("Content-Type", ctype), ("Transfer-Encoding", "chunked")]))
         await writer.drain()
         times = self.sse_sent.setdefault(stream_id, []) if stream_id else None
         for i, piece in enumerate(pieces):
             if gap and i:
                 await asyncio.sleep(gap)
+            if cut_after is not None and i == cut_after:
+                writer.close()    # the endpoint drops the connection inside the body
+                raise ConnectionError("endpoint dropped the stream")
             if times is not None:
                 times.append(time.time())
             writer.write(f"{len(piece):x}\r\n".encode() + piece + b"\r\n")
             await writer.drain()
+        if end_gap:
+            await asyncio.sleep(end_gap)
         writer.write(b"0\r\n\r\n")
         await writer.drain()
 
@@ -176,7 +185,11 @@ class FakeEndpoint:
         elif path.endswith("/sse"):
             n, gap = int(q.get("events", 5)), float(q.get("gap", 0.25))
             pieces = [f"event: tick\ndata: {{\"i\": {i}}}\n\n".encode() for i in range(n)]
-            await self.send_chunked(writer, pieces, "text/event-stream", gap, q.get("id", "sse"))
+            cut = int(q["cut"]) if "cut" in q else None
+            await self.send_chunked(writer, pieces, "text/event-stream", gap, q.get("id", "sse"),
+                                    float(q.get("endgap", 0)), cut)
+            if cut is not None:
+                return True
         elif path.endswith("/close"):
             body = b'{"closing": true}'
             writer.write(self.head(200, "OK", [("Content-Type", "application/json"),
@@ -627,8 +640,48 @@ def run_core(results, workdir):
               f"client got 100 Continue from the gateway, sent 50000 bytes, endpoint received "
               f"{json.loads(resp)['len']}, logged {r['req_body_bytes']}")
 
+    def check_o12():
+        """O12 endpoint drop"""
+        c = RawClient(gw.port)
+        received = []
+        c.send("POST", "/sse?events=4&gap=0.05&cut=2&id=drop", b"{}")
+        try:
+            c.response(on_piece=lambda p, t: received.append(p))
+            closed = False
+        except ConnectionError:
+            closed = True
+        c.close()
+        time.sleep(0.3)
+        r = [x for x in gw.records() if x["path"].startswith("/sse?") and "id=drop" in x["path"]][-1]
+        sent = sum(len(p) for p in received)
+        ok = (closed and r["error_side"] == "upstream" and r["resp_body_bytes"] == sent == 2 * 28
+              and r["resp_pieces"] == 2)
+        check(results, "O12 endpoint drop", ok,
+              f"the endpoint sent 2 of 4 events and dropped the connection; the client got {sent} bytes and then a "
+              f"closed connection {closed}; the gateway logged {r['resp_body_bytes']} bytes in {r['resp_pieces']} "
+              f"pieces, error side {r['error_side']} ({r['error']})")
+
+    def check_o13():
+        """O13 agent close"""
+        c = RawClient(gw.port)
+        c.send("POST", "/sse?events=3&gap=0.05&endgap=0.3&id=early", b"{}")
+        got = b""
+        while got.count(b"event: tick") < 3:
+            got += c.sock.recv(65536)
+        c.sock.close()
+        time.sleep(0.8)
+        r = [x for x in gw.records() if x["path"].startswith("/sse?") and "id=early" in x["path"]][-1]
+        up = [x for x in gw.records("up_close") if x["up_conn"] == r["up_conn"]]
+        ok = r["error_side"] == "agent" and r["resp_body_bytes"] == 3 * 28 and up \
+            and up[-1]["reason"] == "agent connection failed during the call"
+        check(results, "O13 agent close", ok,
+              f"the client closed after the 3rd event, before the end of the stream; the gateway logged "
+              f"{r['resp_body_bytes']} bytes, error side {r['error_side']} ({r['error']}); upstream connection "
+              f"closed: {up[-1]['reason'] if up else None}")
+
     try:
-        for fn in (check_o1, check_o2, check_o3, check_o4, check_o5, check_o6, check_o7, check_o8, check_o9):
+        for fn in (check_o1, check_o2, check_o3, check_o4, check_o5, check_o6, check_o7, check_o8, check_o9,
+                   check_o12, check_o13):
             try:
                 fn()
             except Exception as e:
@@ -781,16 +834,19 @@ def run_agent(results, workdir, which):
     per_conn = {c: len([r for r in calls if r["conn"] == c]) for c in agent_conns}
     sizes_ok = all(r["req_body_bytes"] == q["length"] for r, q in zip(
         [r for r in calls if r["req_framing"] != "none"], [q for q in fake.requests if q["method"] != "GET"]))
+    agent_closes = [r for r in calls if r["error"] and r.get("error_side") == "agent"]
+    errors = [r for r in calls if r["error"] and r.get("error_side") != "agent"]
     ok = (code == 0 and len(model_calls) >= 2 and streamed and len(tools) >= 1 and tools[0]["tool"] == "word_count"
           and tools[0]["args_bytes"] > 0 and re.findall(r"\d+", answer) == ["4"] and len(up_conns) == len(agent_conns)
-          and sizes_ok and not [r for r in calls if r["error"]])
+          and sizes_ok and not errors)
     paths = sorted({f"{r['method']} {r['path'].split('?')[0]}" for r in calls})
     check(results, name, ok,
           f"exit {code} in {took:.0f} s; {len(calls)} calls through the gateway ({', '.join(paths)}), "
           f"{len(streamed)} streamed; {len(agent_conns)} agent connections, {len(up_conns)} upstream connections, "
           f"calls per agent connection {list(per_conn.values())}; logged request sizes equal the bytes the endpoint "
           f"received {sizes_ok}; tool calls logged {[(t['tool'], t['args_bytes']) for t in tools]}; "
-          f"answer {(answer or '').strip()[-60:]!r}")
+          f"answer {(answer or '').strip()[-60:]!r}; calls the agent closed itself {len(agent_closes)}; other "
+          f"errors {[r['error'] for r in errors]}")
 
 
 def codex_config(base_url, mcp):

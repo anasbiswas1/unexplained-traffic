@@ -15,6 +15,10 @@ Connection behaviour follows the agent's own connections:
 TLS session keys of the upstream connections go to the key log named by --keylog, or by SSLKEYLOGFILE, for
 ground-truth labelling of the capture only. Bodies and header values are never logged.
 
+When a call fails, the log keeps the bytes relayed up to the failure and names the side that failed (error_side):
+"agent" when the agent's connection closed or failed (for example an agent that closes as soon as it has the last
+event of a stream), "upstream" when the endpoint's connection closed or failed, "gateway" for anything else.
+
 Log lines (one JSON object per line, times are Unix epoch seconds):
   event=up_open   upstream connection opened (up_conn, conn, up_local, up_remote, t)
   event=up_close  upstream connection closed (up_conn, conn, reason, t)
@@ -122,11 +126,32 @@ def framing(head: Head, is_request: bool, method: str = "", status: int = 0) -> 
     return ("none", 0) if is_request else ("eof", 0)
 
 
-class Relay:
-    """Copies one body from reader to writer as it arrives and counts its bytes."""
+class SideError(Exception):
+    """A failure on one side of the gateway: "agent" (the agent's connection) or "upstream" (the endpoint's)."""
 
-    def __init__(self, idle: float, on_piece=None):
+    def __init__(self, side: str, exc: BaseException):
+        super().__init__(f"{type(exc).__name__}: {exc}")
+        self.side = side
+
+
+async def on_side(side: str, awaitable):
+    try:
+        return await awaitable
+    except (OSError, EOFError, ValueError, asyncio.TimeoutError, asyncio.LimitOverrunError) as e:
+        raise SideError(side, e) from e
+
+
+async def send(writer, data: bytes) -> None:
+    writer.write(data)
+    await writer.drain()
+
+
+class Relay:
+    """Copies one body from reader (side src) to writer (side dst) as it arrives and counts its bytes."""
+
+    def __init__(self, idle: float, src: str, dst: str, on_piece=None):
         self.idle = idle
+        self.src, self.dst = src, dst
         self.on_piece = on_piece
         self.body = 0          # payload bytes after removing chunk framing
         self.wire = 0          # bytes as framed on the connection
@@ -134,24 +159,26 @@ class Relay:
         self.t_first = None
 
     async def _read(self, reader, n):
-        data = await asyncio.wait_for(reader.read(n), self.idle)
+        data = await on_side(self.src, asyncio.wait_for(reader.read(n), self.idle))
         if data and self.t_first is None:
             self.t_first = time.time()
         return data
 
     async def _line(self, reader):
-        data = await asyncio.wait_for(reader.readuntil(b"\r\n"), self.idle)
+        data = await on_side(self.src, asyncio.wait_for(reader.readuntil(b"\r\n"), self.idle))
         if self.t_first is None:
             self.t_first = time.time()
         return data
+
+    async def _send(self, writer, data):
+        await on_side(self.dst, send(writer, data))
 
     async def _payload(self, reader, writer, remaining):
         while remaining:
             data = await self._read(reader, min(remaining, PIECE))
             if not data:
-                raise ConnectionError("connection closed inside a body")
-            writer.write(data)
-            await writer.drain()
+                raise SideError(self.src, ConnectionError("connection closed inside a body"))
+            await self._send(writer, data)
             remaining -= len(data)
             self.body += len(data)
             self.wire += len(data)
@@ -170,8 +197,7 @@ class Relay:
                 data = await self._read(reader, PIECE)
                 if not data:
                     return
-                writer.write(data)
-                await writer.drain()
+                await self._send(writer, data)
                 self.body += len(data)
                 self.wire += len(data)
                 self.pieces += 1
@@ -180,23 +206,24 @@ class Relay:
         # chunked: every chunk is forwarded with its framing, and the chunk terminator is flushed before the next read
         while True:
             line = await self._line(reader)
-            writer.write(line)
+            try:
+                size = int(line.split(b";", 1)[0].strip(), 16)
+            except ValueError as e:
+                raise SideError(self.src, e) from e
+            await self._send(writer, line)
             self.wire += len(line)
-            size = int(line.split(b";", 1)[0].strip(), 16)
             if size == 0:
                 while True:
                     trailer = await self._line(reader)
-                    writer.write(trailer)
+                    await self._send(writer, trailer)
                     self.wire += len(trailer)
                     if trailer == b"\r\n":
-                        await writer.drain()
                         return
             await self._payload(reader, writer, size)
-            crlf = await asyncio.wait_for(reader.readexactly(2), self.idle)
+            crlf = await on_side(self.src, asyncio.wait_for(reader.readexactly(2), self.idle))
             if crlf != b"\r\n":
-                raise ValueError("bad chunk terminator")
-            writer.write(crlf)
-            await writer.drain()
+                raise SideError(self.src, ValueError("bad chunk terminator"))
+            await self._send(writer, crlf)
             self.wire += 2
 
 
@@ -295,7 +322,7 @@ class Gateway:
                    expect_continue=False, status=None, resp_framing=None, resp_body_bytes=0,
                    resp_wire_body_bytes=0, resp_head_bytes=0, resp_pieces=0,
                    resp_content_type=None, resp_content_encoding=None, upgrade=False,
-                   t_req_end=None, t_resp_head=None, t_first_byte=None, t_end=None, error=None)
+                   t_req_end=None, t_resp_head=None, t_first_byte=None, t_end=None, error=None, error_side=None)
         client_close = "close" in req.tokens("connection") or (version == "HTTP/1.0"
                                                                and "keep-alive" not in req.tokens("connection"))
         if up is not None and (up[0].at_eof() or up[1].is_closing()):
@@ -311,6 +338,7 @@ class Gateway:
                                     up_local=peer(w, "sockname"), up_remote=peer(w, "peername")))
         except Exception as e:
             rec["error"] = f"upstream connect failed: {type(e).__name__}: {e}"
+            rec["error_side"] = "upstream"
             rec["t_end"] = time.time()
             self.log.write(rec)
             body = json.dumps({"error": rec["error"]}).encode()
@@ -329,21 +357,24 @@ class Gateway:
                 scan.extend(piece[:MODEL_SCAN - len(scan)])
 
         keep_up = True
+        sent = got = None
         try:
-            kind, length = framing(req, True)
+            try:
+                kind, length = framing(req, True)
+            except ValueError as e:
+                raise SideError("agent", e) from e
             rec["req_framing"] = kind
             drop = set()
             if "100-continue" in req.tokens("expect"):
                 # the gateway answers 100 Continue itself so the agent sends its body at once
                 rec["expect_continue"] = True
                 drop.add("expect")
-                d_writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
-                await d_writer.drain()
+                await on_side("agent", send(d_writer, b"HTTP/1.1 100 Continue\r\n\r\n"))
             u_writer.write(req.encode(f"{method} {self.up.target(target)} {version}",
                                       replace={"host": self.up.host_header}, drop=drop))
-            sent = Relay(self.idle, seen)
+            sent = Relay(self.idle, "agent", "upstream", seen)
             await sent.run(kind, length, d_reader, u_writer)
-            await u_writer.drain()
+            await on_side("upstream", u_writer.drain())
             rec.update(req_body_bytes=sent.body, req_wire_body_bytes=sent.wire, t_req_end=time.time())
             if kind != "none":
                 rec["req_sha256"] = sha.hexdigest()
@@ -351,12 +382,14 @@ class Gateway:
                 rec["model"] = m.group(1).decode("utf-8", "replace") if m else None
 
             while True:
-                raw = await asyncio.wait_for(u_reader.readuntil(b"\r\n\r\n"), self.idle)
-                resp = Head(raw)
-                status = int(resp.start.split(" ", 2)[1])
+                raw = await on_side("upstream", asyncio.wait_for(u_reader.readuntil(b"\r\n\r\n"), self.idle))
+                try:
+                    resp = Head(raw)
+                    status = int(resp.start.split(" ", 2)[1])
+                except (ValueError, IndexError) as e:
+                    raise SideError("upstream", ValueError(f"bad response head: {e}")) from e
                 rec["resp_head_bytes"] += resp.size()
-                d_writer.write(raw)
-                await d_writer.drain()
+                await on_side("agent", send(d_writer, raw))
                 if 100 <= status < 200 and status != 101:
                     continue
                 break
@@ -375,17 +408,25 @@ class Gateway:
 
             r_kind, r_len = framing(resp, False, method, status)
             rec["resp_framing"] = r_kind
-            got = Relay(self.idle)
+            got = Relay(self.idle, "upstream", "agent")
             await got.run(r_kind, r_len, u_reader, d_writer)
             rec.update(resp_body_bytes=got.body, resp_wire_body_bytes=got.wire, resp_pieces=got.pieces,
                        t_first_byte=got.t_first, t_end=time.time())
             if r_kind == "eof" or "close" in resp.tokens("connection"):
                 keep_up = False
         except Exception as e:
-            rec["error"] = f"{type(e).__name__}: {e}"
-            rec["t_end"] = time.time()
+            side = e.side if isinstance(e, SideError) else "gateway"
+            rec.update(error=str(e) if isinstance(e, SideError) else f"{type(e).__name__}: {e}", error_side=side,
+                       t_end=time.time())
+            if sent is not None and rec["t_req_end"] is None:
+                rec.update(req_body_bytes=sent.body, req_wire_body_bytes=sent.wire)
+            if got is not None:
+                rec.update(resp_body_bytes=got.body, resp_wire_body_bytes=got.wire, resp_pieces=got.pieces,
+                           t_first_byte=got.t_first)
             self.log.write(rec)
-            self.close_up(up, conn, "error during call")
+            self.close_up(up, conn, {"agent": "agent connection failed during the call",
+                                     "upstream": "upstream connection failed during the call"}.get(
+                                         side, "gateway error during the call"))
             return None, False
 
         self.log.write(rec)

@@ -23,6 +23,16 @@ Every check below runs on the VM:
 Gates: gate 1 (Codex on DeepSeek) = V5 and V7; gate 2 (gateway keeps the traffic shape) = V1, V3 and V8;
 testbed = V0, V2, V4 and V6.
 
+Upload bytes are measured three ways per TCP connection: raw TCP payload of every captured segment (resent segments
+included), TCP payload counted once from the sequence numbers (resent bytes removed), and TLS record bytes (record
+header plus record length, each record once). V4 and V8 report the last two and the bytes resent.
+
+Upstream drops: when a call through the gateway ends in an error on the endpoint's side (error_side "upstream" in the
+gateway log) and the first FIN or RST on its connection in the capture comes from the endpoint, the endpoint dropped
+the connection; this is recorded as an upstream drop, not a gateway fault. A check through the gateway (V3, V5, V6,
+V7) that meets an upstream drop is run once more and fails only if the rerun meets one too. A call the agent itself
+closed (error_side "agent") is reported but is not a gateway fault either.
+
 Key logs are deleted when the gate ends. Captures and logs stay under data/harness/vm_gate/<time>/ (git-ignored).
 """
 from __future__ import annotations
@@ -178,21 +188,141 @@ def tshark_rows(pcap, display_filter, fields, keylog=None):
     return [ln.split("\t") for ln in r.stdout.splitlines() if ln.strip()]
 
 
+NOT_RESENT = ("!tcp.analysis.retransmission && !tcp.analysis.fast_retransmission "
+              "&& !tcp.analysis.spurious_retransmission")
+
+
+def cols(row, n):
+    return (list(row) + [""] * n)[:n]
+
+
+def truthy(value: str) -> bool:
+    return value.strip().lower() in ("1", "true")
+
+
+def epoch(value: str) -> float:
+    """frame.time_epoch as seconds; tshark prints a number, some versions an ISO 8601 time."""
+    try:
+        return float(value)
+    except ValueError:
+        import datetime
+        v = value.strip().replace("Z", "+00:00")
+        if "." in v:
+            head, frac = v.split(".", 1)
+            n = len(frac) - len(frac.lstrip("0123456789"))
+            v = f"{head}.{frac[:min(n, 6)]}{frac[n:]}"
+        t = datetime.datetime.fromisoformat(v)
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=datetime.timezone.utc)
+        return t.timestamp()
+
+
+def upload_measures(segments, records, client_ip) -> dict:
+    """Bytes per TCP stream, from tshark rows.
+
+    segments  rows (tcp.stream, ip.src, tcp.seq, tcp.len), one per captured segment with payload
+    records   rows (tcp.stream, ip.src, tls.record.length values joined by commas), frames that are not resends
+    Per stream:
+      up_raw    client payload of every captured segment, resent segments included
+      up_tcp    client payload counted once: highest sequence end minus lowest sequence start
+      resent    up_raw minus up_tcp
+      up_tls    client TLS record bytes: 5-byte record header plus record length, each record once
+      down_raw  endpoint payload of every captured segment
+    The capture is taken on the client's side of each connection, so every byte the client sent appears there before
+    any resend of it; up_tls and up_tcp therefore count the same bytes and should be equal.
+    """
+    empty = dict(up_raw=0, up_tcp=0, resent=0, up_tls=0, down_raw=0)
+    out, span = {}, {}
+    for row in segments:
+        stream, src, seq, length = cols(row, 4)
+        if not seq.isdigit() or not length.isdigit():
+            continue
+        f = out.setdefault(stream, dict(empty))
+        n, start = int(length), int(seq)
+        if src == client_ip:
+            f["up_raw"] += n
+            lo, hi = span.get(stream, (start, start + n))
+            span[stream] = (min(lo, start), max(hi, start + n))
+        else:
+            f["down_raw"] += n
+    for stream, (lo, hi) in span.items():
+        out[stream]["up_tcp"] = hi - lo
+        out[stream]["resent"] = out[stream]["up_raw"] - (hi - lo)
+    for row in records:
+        stream, src, lengths = cols(row, 3)
+        if src == client_ip and lengths:
+            f = out.setdefault(stream, dict(empty))
+            f["up_tls"] += sum(5 + int(x) for x in lengths.split(",") if x.strip().isdigit())
+    return out
+
+
 def flows(pcap: str, client_ip: str) -> dict:
-    """Per TCP stream: server name, offered ALPN list, selected ALPN when visible, upload and download payload bytes."""
+    """Per TCP stream: server name, offered ALPN list, selected ALPN when visible, and the byte counts of
+    upload_measures."""
     out = {}
-    for stream, sni, alpn in tshark_rows(pcap, "tls.handshake.type == 1", ["tcp.stream",
-                                         "tls.handshake.extensions_server_name", "tls.handshake.extensions_alpn_str"]):
+    for row in tshark_rows(pcap, "tls.handshake.type == 1", ["tcp.stream", "tls.handshake.extensions_server_name",
+                                                              "tls.handshake.extensions_alpn_str"]):
+        stream, sni, alpn = cols(row, 3)
         out.setdefault(stream, {}).update(sni=sni, offered=alpn)
-    for stream, alpn in tshark_rows(pcap, "tls.handshake.type == 2", ["tcp.stream",
-                                    "tls.handshake.extensions_alpn_str"]):
+    for row in tshark_rows(pcap, "tls.handshake.type == 2", ["tcp.stream", "tls.handshake.extensions_alpn_str"]):
+        stream, alpn = cols(row, 2)
         if alpn:
             out.setdefault(stream, {})["selected"] = alpn
-    for stream, src, length in tshark_rows(pcap, "tcp.len > 0", ["tcp.stream", "ip.src", "tcp.len"]):
-        f = out.setdefault(stream, {})
-        k = "up" if src == client_ip else "down"
-        f[k] = f.get(k, 0) + int(length or 0)
+    segments = tshark_rows(pcap, "tcp.len > 0", ["tcp.stream", "ip.src", "tcp.seq", "tcp.len"])
+    records = tshark_rows(pcap, f"tls.record && {NOT_RESENT}", ["tcp.stream", "ip.src", "tls.record.length"])
+    for stream, m in upload_measures(segments, records, client_ip).items():
+        out.setdefault(stream, {}).update(m)
     return out
+
+
+def close_rows_to_events(rows, client_ip) -> dict:
+    """FIN and RST packets per client port, in capture order: {port: [(time, sent by the endpoint, 'FIN'/'RST')]}.
+    rows: (frame.time_epoch, ip.src, tcp.srcport, tcp.dstport, tcp.flags.fin, tcp.flags.reset)."""
+    events = {}
+    for row in rows:
+        t, src, sport, dport, fin, rst = cols(row, 6)
+        from_endpoint = src != client_ip
+        port = dport if from_endpoint else sport
+        events.setdefault(port, []).append((epoch(t), from_endpoint, "RST" if truthy(rst) else "FIN"))
+    return events
+
+
+def close_events(pcap: str, client_ip: str) -> dict:
+    rows = tshark_rows(pcap, "tcp.flags.fin == 1 || tcp.flags.reset == 1",
+                       ["frame.time_epoch", "ip.src", "tcp.srcport", "tcp.dstport", "tcp.flags.fin",
+                        "tcp.flags.reset"])
+    return close_rows_to_events(rows, client_ip)
+
+
+def upstream_drops(calls: list[dict], events: dict) -> list[dict]:
+    """Calls through the gateway that ended in an error on the endpoint's side, on a connection the endpoint closed
+    first."""
+    drops = []
+    for c in calls:
+        if not c.get("error") or not c.get("up_local") or c.get("error_side", "upstream") != "upstream":
+            continue
+        port = c["up_local"].rsplit(":", 1)[1]
+        after = [e for e in events.get(port, []) if e[0] >= c["t"] - 0.001]
+        if not after or not after[0][1]:
+            continue
+        t, _, kind = after[0]
+        if c.get("status") is None:
+            phase = "before the response head"
+        elif not c.get("resp_body_bytes"):
+            phase = f"after the {c['status']} response head, before any body"
+        else:
+            phase = f"inside the body, after {c['resp_body_bytes']} bytes"
+        drops.append(dict(conn=c["conn"], seq=c["seq"], path=c["path"].split("?")[0], status=c.get("status"),
+                          phase=phase, closed_by=f"endpoint {kind}",
+                          seconds_after_head=round(t - c["t_resp_head"], 3) if c.get("t_resp_head") else None,
+                          gateway_error=c["error"]))
+    return drops
+
+
+def describe_drops(drops: list[dict]) -> str:
+    return "; ".join(f"upstream drop on {d['path']} {d['phase']} ({d['closed_by']}"
+                     + (f", {d['seconds_after_head']} s after the head" if d["seconds_after_head"] is not None
+                        else "") + ")" for d in drops)
 
 
 def model_flows(fl: dict) -> list[dict]:
@@ -315,10 +445,24 @@ class Gate:
                         f"A to B {reach_run}, A to the VM {reach_vm}, A to the metadata address {reach_meta}")
 
     # V3 and V4
-    def anthropic_api(self):
+    def with_rerun(self, attempt, index, rerun_index, name):
+        """Runs one attempt; when the endpoint dropped a call, records the drop and runs the attempt once more."""
+        first = attempt(index, name)
+        if not first["drops"]:
+            return first, ""
+        note = f"first attempt: {describe_drops(first['drops'])}; rerun once"
+        second = attempt(rerun_index, name + "_rerun")
+        second["first_drops"] = first["drops"]
+        if second["drops"]:
+            note += f"; rerun: {describe_drops(second['drops'])}, so the endpoint dropped a call again"
+        else:
+            note += "; the rerun had no upstream drop"
+        return second, note
+
+    def anthropic_attempt(self, index, name):
         import netns
-        d = os.path.join(self.out, "anthropic_api")
-        with netns.RunNet(13) as net:
+        d = os.path.join(self.out, name)
+        with netns.RunNet(index) as net:
             cap = net.capture(os.path.join(d, "run.pcap"))
             gw = None
             try:
@@ -331,73 +475,108 @@ class Gate:
                 time.sleep(1)
                 cap.stop()
             calls = read_jsonl(log, "call")
-            fl = flows(cap.path, net.ns_ip)
-            mf = model_flows(fl)
-            if "error" in res or len(calls) != 3:
-                self.record("V3 Anthropic API", False, f"client result {str(res)[:400]}; {len(calls)} logged calls")
-                self.record("V4 key log", False, "not run: V3 did not complete")
-                return
-            tool_ok = res["tool"]["status"] == 200
-            s = res["stream"]
-            g = calls[1]
-            first_arrival = s["reads"][0][0] if s["reads"] else None
-            span = (g["t_end"] - g["t_first_byte"]) if g["t_first_byte"] else 0
-            lag = (first_arrival - g["t_first_byte"]) if first_arrival and g["t_first_byte"] else None
-            streamed = (s["status"] == 200 and len(s["reads"]) >= 5 and lag is not None and lag < 0.25
-                        and span >= 1.0 and first_arrival < g["t_end"] - 0.5)
-            one_conn = len({c["up_conn"] for c in calls}) == 1 and [c["up_new"] for c in calls] == [True, False, False]
-            ok = tool_ok and streamed and one_conn and len(mf) == 1 and all(c["status"] == 200 for c in calls)
-            self.record("V3 Anthropic API", ok,
-                        f"tool request {res['tool']['status']}, tool call returned {res['tool']['tool_use']}; long "
-                        f"answer streamed over {span:.2f} s in {len(s['reads'])} reads, first piece reached the client "
-                        f"{(lag or 0) * 1e3:.0f} ms after the gateway read it; statuses "
-                        f"{[c['status'] for c in calls]}; one upstream connection for 3 calls {one_conn}; TLS "
-                        f"connections to {MODEL_HOST} in the capture {len(mf)}"
-                        + (f"; error body {res['tool']['head'] or s['head']}" if not tool_ok or s['status'] != 200
-                           else ""),
-                        dict(client=res, calls=calls, flows=fl))
-            # V4: decrypt with the run's key log, then without it
-            req = tshark_rows(cap.path, "http.request", ["http.request.method", "http.request.uri",
-                                                          "http.content_length"], keylog=keylog)
-            rsp = tshark_rows(cap.path, "http.response", ["http.response.code"], keylog=keylog)
-            plain = tshark_rows(cap.path, "http", ["frame.number"])
-            dec_lengths = [int(r[2]) for r in req if len(r) > 2 and r[2].isdigit()]
-            logged = [c["req_body_bytes"] for c in calls]
-            up = mf[0].get("up", 0) if mf else 0
-            framed = sum(c["req_head_bytes"] + c["req_wire_body_bytes"] for c in calls)
-            ok4 = dec_lengths == logged and [r[0] for r in rsp] == ["200"] * 3 and not plain
-            self.record("V4 key log", ok4,
-                        f"with the key log tshark decrypted {len(req)} requests with lengths {dec_lengths} (gateway "
-                        f"logged {logged}) and {len(rsp)} responses {[r[0] for r in rsp]}; without it "
-                        f"{len(plain)} HTTP frames; upload on the wire {up} bytes for {framed} bytes of HTTP, "
-                        f"so TLS and TCP payload overhead {up - framed} bytes over 3 calls")
+            return dict(res=res, calls=calls, flows=flows(cap.path, net.ns_ip), pcap=cap.path, keylog=keylog,
+                        drops=upstream_drops(calls, close_events(cap.path, net.ns_ip)))
+
+    def anthropic_api(self):
+        a, note = self.with_rerun(self.anthropic_attempt, 13, 23, "anthropic_api")
+        lead = note + "; " if note else ""
+        res, calls, fl = a["res"], a["calls"], a["flows"]
+        data = dict(client=res, calls=calls, flows=fl, first_attempt_drops=a.get("first_drops"),
+                    drops=a["drops"])
+        if a["drops"]:
+            self.record("V3 Anthropic API", False, note, data)
+            self.record("V4 key log", False, "not run: the endpoint dropped a call on both attempts")
+            return
+        mf = model_flows(fl)
+        if "error" in res or len(calls) != 3:
+            self.record("V3 Anthropic API", False, f"{lead}client result {str(res)[:400]}; {len(calls)} logged calls",
+                        data)
+            self.record("V4 key log", False, "not run: V3 did not complete")
+            return
+        tool_ok = res["tool"]["status"] == 200
+        s = res["stream"]
+        g = calls[1]
+        first_arrival = s["reads"][0][0] if s["reads"] else None
+        span = (g["t_end"] - g["t_first_byte"]) if g["t_first_byte"] else 0
+        lag = (first_arrival - g["t_first_byte"]) if first_arrival and g["t_first_byte"] else None
+        streamed = (s["status"] == 200 and len(s["reads"]) >= 5 and lag is not None and lag < 0.25
+                    and span >= 1.0 and first_arrival < g["t_end"] - 0.5)
+        one_conn = len({c["up_conn"] for c in calls}) == 1 and [c["up_new"] for c in calls] == [True, False, False]
+        ok = tool_ok and streamed and one_conn and len(mf) == 1 and all(c["status"] == 200 for c in calls)
+        self.record("V3 Anthropic API", ok,
+                    f"{lead}tool request {res['tool']['status']}, tool call returned {res['tool']['tool_use']}; long "
+                    f"answer streamed over {span:.2f} s in {len(s['reads'])} reads, first piece reached the client "
+                    f"{(lag or 0) * 1e3:.0f} ms after the gateway read it; statuses "
+                    f"{[c['status'] for c in calls]}; one upstream connection for 3 calls {one_conn}; TLS "
+                    f"connections to {MODEL_HOST} in the capture {len(mf)}"
+                    + (f"; error body {res['tool']['head'] or s['head']}" if not tool_ok or s['status'] != 200
+                       else ""), data)
+        # V4: decrypt with the run's key log, then without it
+        req = tshark_rows(a["pcap"], "http.request", ["http.request.method", "http.request.uri",
+                                                      "http.content_length"], keylog=a["keylog"])
+        rsp = tshark_rows(a["pcap"], "http.response", ["http.response.code"], keylog=a["keylog"])
+        plain = tshark_rows(a["pcap"], "http", ["frame.number"])
+        dec_lengths = [int(r[2]) for r in req if len(r) > 2 and r[2].isdigit()]
+        logged = [c["req_body_bytes"] for c in calls]
+        f = mf[0] if mf else {}
+        framed = sum(c["req_head_bytes"] + c["req_wire_body_bytes"] for c in calls)
+        ok4 = dec_lengths == logged and [r[0] for r in rsp] == ["200"] * 3 and not plain
+        self.record("V4 key log", ok4,
+                    f"with the key log tshark decrypted {len(req)} requests with lengths {dec_lengths} (gateway "
+                    f"logged {logged}) and {len(rsp)} responses {[r[0] for r in rsp]}; without it "
+                    f"{len(plain)} HTTP frames; upload on the wire {f.get('up_tls', 0)} bytes of TLS records and "
+                    f"{f.get('up_tcp', 0)} TCP bytes without resends ({f.get('resent', 0)} bytes resent) for "
+                    f"{framed} bytes of HTTP, so TLS overhead {f.get('up_tls', 0) - framed} bytes over 3 calls")
 
     # V5
-    def responses_api(self):
+    def responses_attempt(self, index, name):
         import netns
-        d = os.path.join(self.out, "responses_api")
-        with netns.RunNet(14) as net:
-            gw, log, _ = self.start_gateway(net, d, "gw", RESPONSES_BASE, 8082)
+        d = os.path.join(self.out, name)
+        with netns.RunNet(index) as net:
+            cap = net.capture(os.path.join(d, "run.pcap"))
+            gw = None
             try:
+                gw, log, _ = self.start_gateway(net, d, "gw", RESPONSES_BASE, 8082)
                 res = in_ns(net, "responses", 8082)
                 alpn = in_ns(net, "alpn", MODEL_HOST)
             finally:
-                self.stop(gw)
+                if gw:
+                    self.stop(gw)
+                time.sleep(1)
+                cap.stop()
             calls = read_jsonl(log, "call")
-            ok = res.get("status") == 200 and len(calls) == 1 \
-                and (calls[0]["resp_content_type"] or "").startswith("text/event-stream")
-            self.record("V5 Responses API", ok,
-                        f"POST /responses {res.get('status')}, content type {res.get('content_type')}, function call "
-                        f"to word_count {res.get('function_call')}, events {res.get('events')}"
-                        + (f"; error body {res.get('head') or res.get('error')}" if not ok else ""),
-                        dict(client=res, calls=calls))
-            self.alpn = alpn
+            return dict(res=res, alpn=alpn, calls=calls, pcap=cap.path,
+                        drops=upstream_drops(calls, close_events(cap.path, net.ns_ip)))
+
+    def responses_api(self):
+        a, note = self.with_rerun(self.responses_attempt, 14, 24, "responses_api")
+        self.alpn = a["alpn"]
+        res, calls = a["res"], a["calls"]
+        data = dict(client=res, calls=calls, first_attempt_drops=a.get("first_drops"), drops=a["drops"])
+        if a["drops"]:
+            self.record("V5 Responses API", False, note, data)
+            return
+        ok = res.get("status") == 200 and len(calls) == 1 \
+            and (calls[0]["resp_content_type"] or "").startswith("text/event-stream")
+        self.record("V5 Responses API", ok,
+                    (note + "; " if note else "")
+                    + f"POST /responses {res.get('status')}, content type {res.get('content_type')}, function call "
+                    f"to word_count {res.get('function_call')}, events {res.get('events')}"
+                    + (f"; error body {res.get('head') or res.get('error')}" if not ok else ""), data)
 
     # V6 to V8
-    def agent(self, which, mode, index):
+    def agent_run(self, which, mode, index):
+        """Gateway runs get the upstream-drop rerun; direct runs have no gateway log to read drops from."""
+        if mode == "gateway":
+            return self.with_rerun(lambda i, name: self.agent(which, mode, i, name), index, index + 10,
+                                   f"{which}_{mode}")
+        return self.agent(which, mode, index, f"{which}_{mode}"), ""
+
+    def agent(self, which, mode, index, name):
         import netns
         from offline_check import AGENT_PROMPT, MCP, codex_config
-        d = os.path.join(self.out, f"{which}_{mode}")
+        d = os.path.join(self.out, name)
         home, ws = os.path.join(d, "home"), os.path.join(d, "ws")
         os.makedirs(home, exist_ok=True)
         os.makedirs(ws, exist_ok=True)
@@ -451,6 +630,7 @@ class Gate:
             with open(os.path.join(d, "agent_stderr.txt"), "w") as f:
                 f.write(err)
             fl = flows(cap.path, net.ns_ip)
+            events = close_events(cap.path, net.ns_ip)
         answer = ""
         if which == "claude":
             try:
@@ -464,37 +644,48 @@ class Gate:
         tools = read_jsonl(tool_log, "tool_call")
         mf = model_flows(fl)
         return dict(which=which, mode=mode, exit=code, seconds=round(took, 1), answer=answer.strip()[-200:],
-                    calls=calls, tools=tools, model_flows=mf,
+                    calls=calls, tools=tools, model_flows=mf, pcap=cap.path, drops=upstream_drops(calls, events),
                     other_hosts=sorted({f.get("sni") for f in fl.values()
                                         if f.get("sni") and f.get("sni") != MODEL_HOST}),
                     stderr_tail=err.strip()[-400:])
 
-    def agent_check(self, name, r):
+    def agent_check(self, name, r, note=""):
+        if r["drops"]:
+            self.record(name, False, note, r)
+            return
         model_calls = [c for c in r["calls"] if c["path"].split("?")[0].endswith(("/v1/messages", "/responses"))]
         streamed = [c for c in model_calls if (c["resp_content_type"] or "").startswith("text/event-stream")]
         agent_conns = {c["conn"] for c in r["calls"]}
         up_conns = {c["up_conn"] for c in r["calls"] if c["up_conn"]}
-        errors = [c["error"] for c in r["calls"] if c["error"]]
+        agent_closes = [c for c in r["calls"] if c["error"] and c.get("error_side") == "agent"]
+        errors = [c["error"] for c in r["calls"] if c["error"] and c.get("error_side") != "agent"]
         ok = (r["exit"] == 0 and answered(r["answer"]) and len(model_calls) >= 2 and streamed
               and all(c["status"] == 200 for c in model_calls) and r["tools"] and r["tools"][0]["tool"] == "word_count"
               and len(agent_conns) == len(up_conns) and not errors and r["model_flows"])
         self.record(name, ok,
-                    f"exit {r['exit']} in {r['seconds']} s, answer {r['answer'][-40:]!r}; {len(model_calls)} model "
+                    (note + "; " if note else "")
+                    + f"exit {r['exit']} in {r['seconds']} s, answer {r['answer'][-40:]!r}; {len(model_calls)} model "
                     f"calls (statuses {[c['status'] for c in model_calls]}, {len(streamed)} streamed, request bytes "
                     f"{[c['req_body_bytes'] for c in model_calls]}); tool calls "
                     f"{[(t['tool'], t['args_bytes']) for t in r['tools']]}; "
-                    f"agent connections {len(agent_conns)}, upstream connections {len(up_conns)}; TLS connections "
+                    f"agent connections {len(agent_conns)}, upstream connections {len(up_conns)}; calls the agent "
+                    f"closed itself {len(agent_closes)}; gateway or endpoint errors {errors}; TLS connections "
                     f"to {MODEL_HOST} {len(r['model_flows'])}; other hosts {r['other_hosts']}"
                     + (f"; stderr {r['stderr_tail'][-300:]}" if not ok else ""), r)
 
     def fidelity(self, direct, gateway, label):
         def summary(r):
             mf = r["model_flows"]
+            total = lambda k: sum(f.get(k, 0) for f in mf)
             return dict(connections=len(mf), offered=sorted({f.get("offered", "") for f in mf}),
                         selected=sorted({f.get("selected", "") for f in mf if f.get("selected")}),
-                        upload=sum(f.get("up", 0) for f in mf), exit=r["exit"], answer=r["answer"][-20:])
+                        up_tls=total("up_tls"), up_tcp=total("up_tcp"), up_raw=total("up_raw"),
+                        resent=total("resent"), tool_calls=len(r["tools"]), exit=r["exit"],
+                        answer=r["answer"][-20:])
+
+        def pct(g, d):
+            return f"{(g - d) / d * 100:+.1f}%" if d else "n/a"
         sd, sg = summary(direct), summary(gateway)
-        sd["tool_calls"], sg["tool_calls"] = len(direct["tools"]), len(gateway["tools"])
         probe = getattr(self, "alpn", None) or {}
         server_h2 = probe.get("selected") == "h2"
         direct_h2 = any("h2" in o.split(",") for o in sd["offered"]) and server_h2
@@ -503,14 +694,17 @@ class Gate:
         ok = (direct["exit"] == 0 and gateway["exit"] == 0 and "selected" in probe and same_protocol and same_conns
               and sd["connections"] > 0)
         self.record(f"V8 fidelity {label}", ok,
-                    (f"ALPN probe of {MODEL_HOST} failed {probe}; " if "selected" not in probe else "") +
-                    f"straight to DeepSeek: {sd['connections']} TLS connections to {MODEL_HOST}, offered ALPN "
-                    f"{sd['offered']}, upload {sd['upload']} bytes, {sd['tool_calls']} tool calls; through the "
-                    f"gateway: "
-                    f"{sg['connections']} connections, offered ALPN {sg['offered']}, upload {sg['upload']} bytes, "
-                    f"{sg['tool_calls']} tool calls; {MODEL_HOST} picks h2 "
-                    f"when offered: {server_h2}; same HTTP version on the wire {same_protocol}; same number of "
-                    f"connections {same_conns}", dict(direct=sd, gateway=sg))
+                    (f"ALPN probe of {MODEL_HOST} failed {probe}; " if "selected" not in probe else "")
+                    + ("the gateway run is the rerun after an upstream drop; " if gateway.get("first_drops") else "")
+                    + f"TLS connections to {MODEL_HOST}: straight to DeepSeek {sd['connections']}, through the "
+                    f"gateway {sg['connections']}; offered ALPN: straight {sd['offered']}, gateway {sg['offered']}; "
+                    f"upload as TLS records: straight {sd['up_tls']} B, gateway {sg['up_tls']} B "
+                    f"({pct(sg['up_tls'], sd['up_tls'])}); upload as TCP bytes without resends: straight "
+                    f"{sd['up_tcp']} B, gateway {sg['up_tcp']} B ({pct(sg['up_tcp'], sd['up_tcp'])}); resent: "
+                    f"straight {sd['resent']} B, gateway {sg['resent']} B; tool calls: straight {sd['tool_calls']}, "
+                    f"gateway {sg['tool_calls']}; {MODEL_HOST} picks h2 when offered: {server_h2}; same HTTP "
+                    f"version on the wire {same_protocol}; same number of connections {same_conns}",
+                    dict(direct=sd, gateway=sg))
 
     def guard(self, name, fn, *args):
         try:
@@ -568,17 +762,20 @@ def main(argv=None):
         runs = {}
         for i, (which, mode) in enumerate([("claude", "gateway"), ("codex", "gateway"), ("claude", "direct"),
                                            ("codex", "direct")]):
-            runs[(which, mode)] = g.guard(f"{which} {mode} run", g.agent, which, mode, 15 + i)
+            runs[(which, mode)] = g.guard(f"{which} {mode} run", g.agent_run, which, mode, 15 + i) or (None, "")
         for name, run_key in (("V6 Claude Code", ("claude", "gateway")), ("V7 Codex", ("codex", "gateway"))):
-            if runs[run_key]:
-                g.agent_check(name, runs[run_key])
+            run, note = runs[run_key]
+            if run:
+                g.agent_check(name, run, note)
             else:
                 g.record(name, False, "the run did not complete")
         for label, which in (("Claude Code", "claude"), ("Codex", "codex")):
-            if runs[(which, "direct")] and runs[(which, "gateway")]:
-                g.fidelity(runs[(which, "direct")], runs[(which, "gateway")], label)
+            direct, gateway = runs[(which, "direct")][0], runs[(which, "gateway")][0]
+            if direct and gateway and not gateway["drops"]:
+                g.fidelity(direct, gateway, label)
             else:
-                g.record(f"V8 fidelity {label}", False, "a run did not complete")
+                g.record(f"V8 fidelity {label}", False, "a run did not complete or the endpoint dropped a call on "
+                                                         "both gateway attempts")
     finally:
         removed = g.delete_keylogs()
         try:
