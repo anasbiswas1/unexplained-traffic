@@ -27,6 +27,16 @@ Upload bytes are measured three ways per TCP connection: raw TCP payload of ever
 included), TCP payload counted once from the sequence numbers (resent bytes removed), and TLS record bytes (record
 header plus record length, each record once). V4 and V8 report the last two and the bytes resent.
 
+Wire checks on a run capture (V2 for both runs, V8 for all four agent runs); a run fails when any of them fails:
+  - both veth ends have the uplink's MTU and have segmentation and receive offloads off (checked when the run's
+    namespace is created, reported here);
+  - no ICMP "fragmentation needed" message in the capture;
+  - no captured IP packet larger than the MTU (a larger one is an offload block, not a wire packet);
+  - upload bytes resent at most RESENT_TOLERANCE_SEGMENTS full-size segments (MTU minus 40 bytes each) over the whole
+    capture; expected 0 on a clean link; download bytes resent by the endpoint are reported, not gated;
+  - tcpdump wrote every packet its filter received and dropped none.
+Every run directory gets net.json: uplink, MTU, offload states, subnet and capture counts.
+
 Upstream drops: when a call through the gateway ends in an error on the endpoint's side (error_side "upstream" in the
 gateway log) and the first FIN or RST on its connection in the capture comes from the endpoint, the endpoint dropped
 the connection; this is recorded as an upstream drop, not a gateway fault. A check through the gateway (V3, V5, V6,
@@ -62,7 +72,8 @@ RESPONSES_BASE = "https://api.deepseek.com"
 MODEL = "deepseek-flash"
 WORD_COUNT_SCHEMA = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
 AGENT_TIMEOUT = 300
-NEEDED = ["ip", "iptables", "tcpdump", "tshark", "node", "npm", "claude", "codex", "openssl"]
+NEEDED = ["ip", "iptables", "tcpdump", "tshark", "ethtool", "node", "npm", "claude", "codex", "openssl"]
+RESENT_TOLERANCE_SEGMENTS = 1
 
 
 # ---------------------------------------------------------------- clients run inside a namespace (internal mode)
@@ -217,21 +228,24 @@ def epoch(value: str) -> float:
         return t.timestamp()
 
 
-def upload_measures(segments, records, client_ip) -> dict:
+def upload_measures(segments, records, client_ip, flagged=()) -> dict:
     """Bytes per TCP stream, from tshark rows.
 
     segments  rows (tcp.stream, ip.src, tcp.seq, tcp.len), one per captured segment with payload
     records   rows (tcp.stream, ip.src, tls.record.length values joined by commas), frames that are not resends
+    flagged   rows (tcp.stream, ip.src, tcp.len), segments tshark marks as resent
     Per stream:
       up_raw    client payload of every captured segment, resent segments included
       up_tcp    client payload counted once: highest sequence end minus lowest sequence start
       resent    up_raw minus up_tcp
       up_tls    client TLS record bytes: 5-byte record header plus record length, each record once
       down_raw  endpoint payload of every captured segment
+      down_resent  endpoint payload of segments tshark marks as resent (a segment the endpoint lost on the way and
+                   sent again is seen once in a client-side capture, so the sequence span cannot count it)
     The capture is taken on the client's side of each connection, so every byte the client sent appears there before
     any resend of it; up_tls and up_tcp therefore count the same bytes and should be equal.
     """
-    empty = dict(up_raw=0, up_tcp=0, resent=0, up_tls=0, down_raw=0)
+    empty = dict(up_raw=0, up_tcp=0, resent=0, up_tls=0, down_raw=0, down_resent=0)
     out, span = {}, {}
     for row in segments:
         stream, src, seq, length = cols(row, 4)
@@ -253,6 +267,10 @@ def upload_measures(segments, records, client_ip) -> dict:
         if src == client_ip and lengths:
             f = out.setdefault(stream, dict(empty))
             f["up_tls"] += sum(5 + int(x) for x in lengths.split(",") if x.strip().isdigit())
+    for row in flagged:
+        stream, src, length = cols(row, 3)
+        if src != client_ip and length.isdigit():
+            out.setdefault(stream, dict(empty))["down_resent"] += int(length)
     return out
 
 
@@ -270,9 +288,65 @@ def flows(pcap: str, client_ip: str) -> dict:
             out.setdefault(stream, {})["selected"] = alpn
     segments = tshark_rows(pcap, "tcp.len > 0", ["tcp.stream", "ip.src", "tcp.seq", "tcp.len"])
     records = tshark_rows(pcap, f"tls.record && {NOT_RESENT}", ["tcp.stream", "ip.src", "tls.record.length"])
-    for stream, m in upload_measures(segments, records, client_ip).items():
+    flagged = tshark_rows(pcap, f"tcp.len > 0 && !({NOT_RESENT})", ["tcp.stream", "ip.src", "tcp.len"])
+    for stream, m in upload_measures(segments, records, client_ip, flagged).items():
         out.setdefault(stream, {}).update(m)
     return out
+
+
+def first(value: str) -> str:
+    """Outer header value of a field that ICMP errors repeat for the quoted inner header."""
+    return value.split(",")[0]
+
+
+def wire_facts(pcap: str, fl: dict, meta: dict) -> dict:
+    """Capture-level facts for wire_verdict: ICMP fragmentation-needed messages, largest packet, resent bytes."""
+    icmp = tshark_rows(pcap, "icmp.type == 3 && icmp.code == 4", ["ip.src", "icmp.mtu"])
+    sizes = [int(first(r[0])) for r in tshark_rows(pcap, "ip", ["ip.len"]) if r and first(r[0]).isdigit()]
+    cap = next((c for c in meta.get("captures", []) if c["path"] == pcap), {})
+    return dict(mtu=meta.get("mtu"), uplink=meta.get("uplink"), uplink_mtu=meta.get("uplink_mtu"),
+                host_if_mtu=meta.get("host_if_mtu"), ns_if_mtu=meta.get("ns_if_mtu"),
+                offloads=meta.get("offloads", {}), icmp_frag_needed=len(icmp),
+                icmp_next_hop_mtu=sorted({first(cols(r, 2)[1]) for r in icmp}), packets=len(sizes),
+                largest_packet=max(sizes, default=0), up_resent=sum(f.get("resent", 0) for f in fl.values()),
+                down_resent=sum(f.get("down_resent", 0) for f in fl.values()),
+                capture={k: cap.get(k) for k in ("captured", "received", "dropped_kernel", "dropped_interface",
+                                                 "complete")})
+
+
+def wire_verdict(w: dict) -> tuple[bool, list[str]]:
+    """Pass or fail of a run capture, with the reasons for a failure."""
+    import netns
+    mtu = w.get("mtu") or 0
+    tolerance = RESENT_TOLERANCE_SEGMENTS * max(mtu - 40, 0)
+    fails = []
+    if not mtu or not w.get("host_if_mtu") == w.get("ns_if_mtu") == mtu:
+        fails.append(f"veth MTU {w.get('host_if_mtu')}/{w.get('ns_if_mtu')} is not the uplink MTU {mtu}")
+    if not w.get("offloads") or not all(netns.offloads_off(v) for v in w["offloads"].values()):
+        fails.append(f"offloads not all off: {w.get('offloads')}")
+    if w["icmp_frag_needed"]:
+        fails.append(f"{w['icmp_frag_needed']} ICMP fragmentation-needed messages (next-hop MTU "
+                     f"{', '.join(w['icmp_next_hop_mtu'])})")
+    if w["largest_packet"] > mtu:
+        fails.append(f"captured packet of {w['largest_packet']} B is larger than the MTU")
+    if w["up_resent"] > tolerance:
+        fails.append(f"{w['up_resent']} upload bytes resent, above the tolerance of {tolerance} B")
+    if not w["capture"].get("complete"):
+        fails.append(f"capture incomplete {w['capture']}")
+    return not fails, fails
+
+
+def describe_wire(w: dict) -> str:
+    import netns
+    ok, fails = wire_verdict(w)
+    c = w["capture"]
+    off = bool(w["offloads"]) and all(netns.offloads_off(v) for v in w["offloads"].values())
+    return (f"MTU {w['mtu']} (uplink {w['uplink']} {w['uplink_mtu']}, veth {w['host_if_mtu']}/{w['ns_if_mtu']}), "
+            f"offloads off {off}, "
+            f"ICMP fragmentation-needed {w['icmp_frag_needed']}, largest packet {w['largest_packet']} B, upload "
+            f"resent {w['up_resent']} B, download resent {w['down_resent']} B, tcpdump captured {c.get('captured')} "
+            f"of {c.get('received')} (dropped {c.get('dropped_kernel')})"
+            + ("" if ok else f" [FAIL: {'; '.join(fails)}]"))
 
 
 def close_rows_to_events(rows, client_ip) -> dict:
@@ -385,11 +459,16 @@ class Gate:
                     "openssl": ["version"]}.get(cmd, ["--version"])
             r = sh([cmd] + flag)
             versions[cmd] = (r.stdout or r.stderr).strip().splitlines()[0] if (r.stdout or r.stderr).strip() else "?"
-        ok = os.geteuid() == 0 and sys.version_info >= (3, 9) and not missing and bool(self.key)
+        try:
+            import netns
+            up = netns.uplink_mtu()
+        except Exception as e:
+            up = dict(error=f"{type(e).__name__}: {e}")
+        ok = os.geteuid() == 0 and sys.version_info >= (3, 9) and not missing and bool(self.key) and "mtu" in up
         self.record("V0 environment", ok,
                     f"root {os.geteuid() == 0}; Python {platform.python_version()}; {platform.platform()}; "
-                    f"missing commands {missing or 'none'}; DeepSeek key present {bool(self.key)}",
-                    dict(versions=versions))
+                    f"missing commands {missing or 'none'}; DeepSeek key present {bool(self.key)}; uplink {up}",
+                    dict(versions=versions, uplink=up))
         return ok
 
     # V1
@@ -422,6 +501,8 @@ class Gate:
             finally:
                 ca.stop()
                 cb.stop()
+            meta_a = a.write_metadata(os.path.join(d, "a_net.json"))
+            meta_b = b.write_metadata(os.path.join(d, "b_net.json"))
             # reachability is tested after the captures stop, so its probe packets are not part of the capture check
             reach_run = in_ns(a, "reach", b.ns_ip, 9)
             reach_vm = in_ns(a, "reach", a.host_ip, 22)
@@ -432,17 +513,20 @@ class Gate:
                                                ["tls.handshake.extensions_server_name"])}
             sni_b = {r[0] for r in tshark_rows(cb.path, "tls.handshake.type == 1",
                                                ["tls.handshake.extensions_server_name"])}
-            ips_a = {ip for row in ra for ip in row}
-            ips_b = {ip for row in rb for ip in row}
+            ips_a = {ip for row in ra for cell in row for ip in cell.split(",")}
+            ips_b = {ip for row in rb for cell in row for ip in cell.split(",")}
             clean = (b.ns_ip not in ips_a and a.ns_ip not in ips_b and a.ns_ip in ips_a and b.ns_ip in ips_b)
+            wa = wire_facts(ca.path, flows(ca.path, a.ns_ip), meta_a)
+            wb = wire_facts(cb.path, flows(cb.path, b.ns_ip), meta_b)
             ok = (fa.get("ok") and fb.get("ok") and sni_a == {MODEL_HOST} and sni_b == {"www.example.com"} and clean
                   and reach_run.get("result") == "timeout" and reach_vm.get("result") == "timeout"
-                  and reach_meta.get("result") == "timeout")
+                  and reach_meta.get("result") == "timeout" and wire_verdict(wa)[0] and wire_verdict(wb)[0])
             self.record("V2 isolation", ok,
                         f"run A fetched {MODEL_HOST} ({fa}), run B fetched www.example.com ({fb}) at the same time; "
                         f"capture A: {len(ra)} packets, server names {sorted(sni_a)}; capture B: {len(rb)} packets, "
                         f"server names {sorted(sni_b)}; no packet of one run in the other's capture {clean}; "
-                        f"A to B {reach_run}, A to the VM {reach_vm}, A to the metadata address {reach_meta}")
+                        f"A to B {reach_run}, A to the VM {reach_vm}, A to the metadata address {reach_meta}; "
+                        f"wire A: {describe_wire(wa)}; wire B: {describe_wire(wb)}", dict(wire_a=wa, wire_b=wb))
 
     # V3 and V4
     def with_rerun(self, attempt, index, rerun_index, name):
@@ -474,8 +558,9 @@ class Gate:
                     self.stop(gw)
                 time.sleep(1)
                 cap.stop()
+            meta = net.write_metadata(os.path.join(d, "net.json"))
             calls = read_jsonl(log, "call")
-            return dict(res=res, calls=calls, flows=flows(cap.path, net.ns_ip), pcap=cap.path, keylog=keylog,
+            return dict(res=res, calls=calls, flows=flows(cap.path, net.ns_ip), pcap=cap.path, keylog=keylog, net=meta,
                         drops=upstream_drops(calls, close_events(cap.path, net.ns_ip)))
 
     def anthropic_api(self):
@@ -545,8 +630,9 @@ class Gate:
                     self.stop(gw)
                 time.sleep(1)
                 cap.stop()
+            meta = net.write_metadata(os.path.join(d, "net.json"))
             calls = read_jsonl(log, "call")
-            return dict(res=res, alpn=alpn, calls=calls, pcap=cap.path,
+            return dict(res=res, alpn=alpn, calls=calls, pcap=cap.path, net=meta,
                         drops=upstream_drops(calls, close_events(cap.path, net.ns_ip)))
 
     def responses_api(self):
@@ -629,8 +715,10 @@ class Gate:
                 f.write(out)
             with open(os.path.join(d, "agent_stderr.txt"), "w") as f:
                 f.write(err)
+            meta = net.write_metadata(os.path.join(d, "net.json"))
             fl = flows(cap.path, net.ns_ip)
             events = close_events(cap.path, net.ns_ip)
+            wire = wire_facts(cap.path, fl, meta)
         answer = ""
         if which == "claude":
             try:
@@ -645,6 +733,7 @@ class Gate:
         mf = model_flows(fl)
         return dict(which=which, mode=mode, exit=code, seconds=round(took, 1), answer=answer.strip()[-200:],
                     calls=calls, tools=tools, model_flows=mf, pcap=cap.path, drops=upstream_drops(calls, events),
+                    wire=wire,
                     other_hosts=sorted({f.get("sni") for f in fl.values()
                                         if f.get("sni") and f.get("sni") != MODEL_HOST}),
                     stderr_tail=err.strip()[-400:])
@@ -686,13 +775,14 @@ class Gate:
         def pct(g, d):
             return f"{(g - d) / d * 100:+.1f}%" if d else "n/a"
         sd, sg = summary(direct), summary(gateway)
+        wire_ok = wire_verdict(direct["wire"])[0] and wire_verdict(gateway["wire"])[0]
         probe = getattr(self, "alpn", None) or {}
         server_h2 = probe.get("selected") == "h2"
         direct_h2 = any("h2" in o.split(",") for o in sd["offered"]) and server_h2
         same_protocol = not direct_h2   # the gateway speaks HTTP/1.1 upstream
         same_conns = sd["connections"] == sg["connections"]
         ok = (direct["exit"] == 0 and gateway["exit"] == 0 and "selected" in probe and same_protocol and same_conns
-              and sd["connections"] > 0)
+              and sd["connections"] > 0 and wire_ok)
         self.record(f"V8 fidelity {label}", ok,
                     (f"ALPN probe of {MODEL_HOST} failed {probe}; " if "selected" not in probe else "")
                     + ("the gateway run is the rerun after an upstream drop; " if gateway.get("first_drops") else "")
@@ -703,8 +793,9 @@ class Gate:
                     f"{sd['up_tcp']} B, gateway {sg['up_tcp']} B ({pct(sg['up_tcp'], sd['up_tcp'])}); resent: "
                     f"straight {sd['resent']} B, gateway {sg['resent']} B; tool calls: straight {sd['tool_calls']}, "
                     f"gateway {sg['tool_calls']}; {MODEL_HOST} picks h2 when offered: {server_h2}; same HTTP "
-                    f"version on the wire {same_protocol}; same number of connections {same_conns}",
-                    dict(direct=sd, gateway=sg))
+                    f"version on the wire {same_protocol}; same number of connections {same_conns}; wire straight: "
+                    f"{describe_wire(direct['wire'])}; wire through the gateway: {describe_wire(gateway['wire'])}",
+                    dict(direct=sd, gateway=sg, wire_direct=direct["wire"], wire_gateway=gateway["wire"]))
 
     def guard(self, name, fn, *args):
         try:

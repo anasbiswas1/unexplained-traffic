@@ -11,7 +11,7 @@ CODEX_VERSION=0.163.0
 if [ "$(id -u)" -ne 0 ]; then echo "run as root"; exit 1; fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
-apt-get install -y -q python3 iproute2 iptables tcpdump tshark openssl curl ca-certificates xz-utils git bubblewrap
+apt-get install -y -q python3 iproute2 iptables tcpdump tshark openssl curl ca-certificates xz-utils git bubblewrap ethtool
 
 case "$(uname -m)" in
   x86_64) arch=x64 ;;
@@ -39,3 +39,4 @@ echo "claude   $(claude --version)"
 echo "codex    $(codex --version)"
 echo "tcpdump  $(tcpdump --version 2>&1 | head -1)"
 echo "tshark   $(tshark --version 2>/dev/null | head -1)"
+echo "ethtool  $(ethtool --version)"
