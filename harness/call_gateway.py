@@ -23,6 +23,11 @@ Log lines (one JSON object per line, times are Unix epoch seconds):
   event=up_open   upstream connection opened (up_conn, conn, up_local, up_remote, t)
   event=up_close  upstream connection closed (up_conn, conn, reason, t)
   event=call      one request and its response (sizes, framing, status, times, ids)
+  event=hold      the hold before the first forwarded request ended (path, waited, released by "file" or "timeout")
+
+--hold-until PATH (used only to prepare an agent's warm home, never in a measured run): requests wait before they are
+forwarded until PATH exists or --hold-max seconds pass, once per gateway process. This keeps the agent running while
+its own startup work finishes, for example Codex's plugin catalogue sync, which is lost when the agent exits first.
 
 Standard library only.
 """
@@ -269,13 +274,30 @@ def peer(writer, which: str) -> str | None:
 
 
 class Gateway:
-    def __init__(self, upstream: Upstream, log: Log, idle: float):
+    def __init__(self, upstream: Upstream, log: Log, idle: float, hold_until: str | None = None,
+                 hold_max: float = 0.0):
         self.up = upstream
         self.log = log
         self.idle = idle
         self.next_conn = 0
         self.next_up = 0
         self.tasks: set[asyncio.Task] = set()
+        self.hold_until, self.hold_max = hold_until, hold_max
+        self.hold_lock = asyncio.Lock()
+        self.held = hold_until is None
+
+    async def hold(self, conn: int) -> None:
+        if self.held:
+            return
+        async with self.hold_lock:
+            if self.held:
+                return
+            t0 = time.time()
+            while not os.path.exists(self.hold_until) and time.time() - t0 < self.hold_max:
+                await asyncio.sleep(0.25)
+            self.held = True
+            self.log.write(dict(event="hold", conn=conn, path=self.hold_until, waited=round(time.time() - t0, 3),
+                                released="file" if os.path.exists(self.hold_until) else "timeout", t=time.time()))
 
     async def handle(self, d_reader, d_writer):
         self.next_conn += 1
@@ -325,6 +347,7 @@ class Gateway:
                    t_req_end=None, t_resp_head=None, t_first_byte=None, t_end=None, error=None, error_side=None)
         client_close = "close" in req.tokens("connection") or (version == "HTTP/1.0"
                                                                and "keep-alive" not in req.tokens("connection"))
+        await self.hold(conn)
         if up is not None and (up[0].at_eof() or up[1].is_closing()):
             self.close_up(up, conn, "upstream closed while idle")
             up = None
@@ -460,7 +483,8 @@ class Gateway:
 async def serve(args):
     host, _, port = args.listen.rpartition(":")
     log = Log(args.log)
-    gw = Gateway(Upstream(args.upstream, args.keylog, args.cafile, args.connect_timeout), log, args.idle_timeout)
+    gw = Gateway(Upstream(args.upstream, args.keylog, args.cafile, args.connect_timeout), log, args.idle_timeout,
+                 args.hold_until, args.hold_max)
     server = await asyncio.start_server(gw.handle, host or "127.0.0.1", int(port), limit=HEAD_LIMIT)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -485,6 +509,9 @@ def main(argv=None):
     p.add_argument("--cafile", default=None, help="CA bundle trusted instead of the system store (tests only)")
     p.add_argument("--connect-timeout", type=float, default=30.0)
     p.add_argument("--idle-timeout", type=float, default=900.0, help="longest silence inside one call")
+    p.add_argument("--hold-until", default=None,
+                   help="warm-home preparation only: hold requests until this file exists")
+    p.add_argument("--hold-max", type=float, default=240.0, help="longest hold in seconds")
     asyncio.run(serve(p.parse_args(argv)))
 
 

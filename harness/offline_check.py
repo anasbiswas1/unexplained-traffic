@@ -21,6 +21,8 @@ the VM. Checks:
                         drop and names the upstream side
   O13 agent close       an agent that closes after the last event, before the end of the stream: the log keeps the
                         bytes relayed and names the agent side
+  O14 warm-up hold      with --hold-until, the first request waits until the file exists (or the hold times out) and
+                        is then forwarded and sized exactly; later requests are not held
 With --agents, real agent clients run against the fake endpoint through the gateway, with the MCP tool server:
   A1 Claude Code (needs the claude command), A2 Codex (needs the codex command).
 
@@ -338,11 +340,11 @@ class FakeEndpoint:
 
 # ---------------------------------------------------------------- gateway process
 class GatewayProc:
-    def __init__(self, upstream, workdir, name, keylog=None, cafile=None):
+    def __init__(self, upstream, workdir, name, keylog=None, cafile=None, extra=()):
         self.port = free_port()
         self.log = os.path.join(workdir, f"{name}_calls.jsonl")
         args = [sys.executable, GATEWAY, "--listen", f"127.0.0.1:{self.port}", "--upstream", upstream,
-                "--log", self.log]
+                "--log", self.log, *extra]
         if keylog:
             args += ["--keylog", keylog]
         if cafile:
@@ -727,6 +729,48 @@ def run_tls(results, workdir):
         gw.stop()
 
 
+def run_hold(results, workdir):
+    fake = FakeEndpoint()
+    flag = os.path.join(workdir, "hold.flag")
+    gw = GatewayProc(f"http://127.0.0.1:{fake.port}", workdir, "hold", extra=["--hold-until", flag, "--hold-max", "20"])
+    gw2 = GatewayProc(f"http://127.0.0.1:{fake.port}", workdir, "hold_timeout",
+                      extra=["--hold-until", flag + ".never", "--hold-max", "1"])
+    try:
+        timer = threading.Timer(1.5, lambda: open(flag, "w").close())
+        t0 = time.time()
+        timer.start()
+        c = RawClient(gw.port)
+        c.send("POST", "/size", b"h" * 5000)
+        first = json.loads(c.response()[2])["len"]
+        t_first = time.time() - t0
+        t1 = time.time()
+        c.send("POST", "/size", b"i" * 7)
+        second = json.loads(c.response()[2])["len"]
+        t_second = time.time() - t1
+        c.close()
+        c2 = RawClient(gw2.port)
+        t2 = time.time()
+        c2.send("POST", "/size", b"j" * 11)
+        third = json.loads(c2.response()[2])["len"]
+        t_third = time.time() - t2
+        c2.close()
+        time.sleep(0.2)
+        held = gw.records("hold")
+        held2 = gw2.records("hold")
+        sizes = [r["req_body_bytes"] for r in gw.records()] + [r["req_body_bytes"] for r in gw2.records()]
+        ok = (first == 5000 and second == 7 and third == 11 and sizes == [5000, 7, 11] and 1.4 <= t_first < 5
+              and t_second < 0.5 and 0.9 <= t_third < 3 and len(held) == 1 and held[0]["released"] == "file"
+              and len(held2) == 1 and held2[0]["released"] == "timeout")
+        check(results, "O14 warm-up hold", ok,
+              f"first request answered after {t_first:.2f} s (file created at 1.5 s), hold released by "
+              f"{held[0]['released'] if held else None}; second request {t_second * 1e3:.0f} ms, not held; with no "
+              f"file and --hold-max 1 the request was answered after {t_third:.2f} s, released by "
+              f"{held2[0]['released'] if held2 else None}; logged sizes {sizes}")
+    finally:
+        gw.stop()
+        gw2.stop()
+
+
 def run_mcp(results, workdir):
     log = os.path.join(workdir, "tools.jsonl")
     ws = os.path.join(workdir, "ws")
@@ -878,6 +922,7 @@ def main(argv=None):
     results = []
     run_core(results, workdir)
     run_tls(results, workdir)
+    run_hold(results, workdir)
     run_mcp(results, workdir)
     if args.agents:
         run_agent(results, workdir, "claude")

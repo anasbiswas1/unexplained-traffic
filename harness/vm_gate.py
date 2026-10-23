@@ -20,8 +20,16 @@ Every check below runs on the VM:
   V7 Codex           the same task with Codex
   V8 fidelity        each agent runs the same task straight to DeepSeek; TLS connections to the model host, offered
                      ALPN protocols and upload bytes are compared with the gateway run
+  H1 warm homes      one warm-up run per agent from an empty home makes the agent's template home (homes.py); the
+                     Codex warm-up is held at the gateway until its plugin catalogue sync has finished; each template
+                     is checked (sync finished, no API key in any file) and saved; reports the warm-up's bytes per host
 Gates: gate 1 (Codex on DeepSeek) = V5 and V7; gate 2 (gateway keeps the traffic shape) = V1, V3 and V8;
-testbed = V0, V2, V4 and V6.
+testbed = V0, V2, V4, V6 and H1.
+
+Every agent run in V6, V7 and V8 starts from a private copy of its agent's template home: a returning user with a warm
+home, not a first launch. V6, V7 and V8 report bytes up and down per remote host for every run (TLS server name, or
+the server address when there is none; UDP per server address) and fail a run that downloads more than
+BACKGROUND_DOWNLOAD_LIMIT bytes from any host other than the model host.
 
 Upload bytes are measured three ways per TCP connection: raw TCP payload of every captured segment (resent segments
 included), TCP payload counted once from the sequence numbers (resent bytes removed), and TLS record bytes (record
@@ -74,6 +82,9 @@ WORD_COUNT_SCHEMA = {"type": "object", "properties": {"text": {"type": "string"}
 AGENT_TIMEOUT = 300
 NEEDED = ["ip", "iptables", "tcpdump", "tshark", "ethtool", "node", "npm", "claude", "codex", "openssl"]
 RESENT_TOLERANCE_SEGMENTS = 1
+HOMES_ROOT = os.path.join(REPO, "data", "harness", "homes")
+BACKGROUND_DOWNLOAD_LIMIT = 1_000_000
+WARMUP_HOLD_MAX = 240
 
 
 # ---------------------------------------------------------------- clients run inside a namespace (internal mode)
@@ -349,6 +360,54 @@ def describe_wire(w: dict) -> str:
             + ("" if ok else f" [FAIL: {'; '.join(fails)}]"))
 
 
+def host_table_from_rows(tcp_rows, udp_rows, client_ip, sni) -> dict:
+    """Bytes per remote host.
+
+    tcp_rows  (tcp.stream, ip.src, ip.dst, tcp.srcport, tcp.dstport, tcp.len), one per TCP packet
+    udp_rows  (ip.src, ip.dst, udp.srcport, udp.dstport, udp.length), one per UDP datagram
+    sni       {tcp.stream: TLS server name}
+    A TCP connection is named by its TLS server name, or by the server address when it has none; UDP is named by the
+    server address (DNS marked). up and down are transport payload bytes as captured, resends included.
+    """
+    hosts, server = {}, {}
+    for row in tcp_rows:
+        stream, src, dst, sport, dport, length = cols(row, 6)
+        src, dst = first(src), first(dst)
+        if stream not in server:
+            server[stream] = f"{dst}:{dport}" if src == client_ip else f"{src}:{sport}"
+        name = sni.get(stream) or server[stream]
+        h = hosts.setdefault(name, dict(streams=set(), up=0, down=0))
+        h["streams"].add(("tcp", stream))
+        h["up" if src == client_ip else "down"] += int(first(length) or 0)
+    for row in udp_rows:
+        src, dst, sport, dport, length = cols(row, 5)
+        src, dst = first(src), first(dst)
+        ip, port = (dst, dport) if src == client_ip else (src, sport)
+        name = f"dns {ip}" if first(port) == "53" else f"udp {ip}:{first(port)}"
+        h = hosts.setdefault(name, dict(streams=set(), up=0, down=0))
+        h["streams"].add(("udp", ip, first(port)))
+        h["up" if src == client_ip else "down"] += max(int(first(length) or 8) - 8, 0)
+    return {k: dict(conns=len(v["streams"]), up=v["up"], down=v["down"]) for k, v in hosts.items()}
+
+
+def host_table(pcap: str, client_ip: str, fl: dict) -> dict:
+    tcp = tshark_rows(pcap, "tcp && !icmp", ["tcp.stream", "ip.src", "ip.dst", "tcp.srcport", "tcp.dstport",
+                                              "tcp.len"])
+    udp = tshark_rows(pcap, "udp && !icmp", ["ip.src", "ip.dst", "udp.srcport", "udp.dstport", "udp.length"])
+    return host_table_from_rows(tcp, udp, client_ip, {k: v["sni"] for k, v in fl.items() if v.get("sni")})
+
+
+def background_downloads(hosts: dict, limit: int = BACKGROUND_DOWNLOAD_LIMIT) -> list[tuple[str, int]]:
+    """Hosts other than the model host that sent the run more than limit bytes."""
+    return sorted(((h, v["down"]) for h, v in hosts.items() if h != MODEL_HOST and v["down"] > limit),
+                  key=lambda x: -x[1])
+
+
+def describe_hosts(hosts: dict) -> str:
+    rows = sorted(hosts.items(), key=lambda kv: -(kv[1]["up"] + kv[1]["down"]))
+    return ", ".join(f"{h} ({v['conns']} conn) up {v['up']:,} B down {v['down']:,} B" for h, v in rows) or "none"
+
+
 def close_rows_to_events(rows, client_ip) -> dict:
     """FIN and RST packets per client port, in capture order: {port: [(time, sent by the endpoint, 'FIN'/'RST')]}.
     rows: (frame.time_epoch, ip.src, tcp.srcport, tcp.dstport, tcp.flags.fin, tcp.flags.reset)."""
@@ -428,13 +487,13 @@ class Gate:
         mark = "PASS" if passed else ("SKIP" if passed is None else "FAIL")
         print(f"{mark}  {check}: {detail}", flush=True)
 
-    def start_gateway(self, net, run_dir, name, upstream, port):
+    def start_gateway(self, net, run_dir, name, upstream, port, extra=()):
         keylog = os.path.join(run_dir, f"{name}.keys")
         log = os.path.join(run_dir, f"{name}_calls.jsonl")
         self.keylogs.append(keylog)
         proc = subprocess.Popen(net.cmd([sys.executable, os.path.join(HERE, "call_gateway.py"), "--listen",
                                          f"127.0.0.1:{port}", "--upstream", upstream, "--log", log,
-                                         "--keylog", keylog]), stderr=subprocess.PIPE, text=True)
+                                         "--keylog", keylog, *extra]), stderr=subprocess.PIPE, text=True)
         line = proc.stderr.readline()
         if "listening" not in line:
             raise RuntimeError(f"gateway did not start: {line}")
@@ -652,20 +711,28 @@ class Gate:
                     + (f"; error body {res.get('head') or res.get('error')}" if not ok else ""), data)
 
     # V6 to V8
-    def agent_run(self, which, mode, index):
+    def agent_run(self, which, mode, index, template):
         """Gateway runs get the upstream-drop rerun; direct runs have no gateway log to read drops from."""
         if mode == "gateway":
-            return self.with_rerun(lambda i, name: self.agent(which, mode, i, name), index, index + 10,
+            return self.with_rerun(lambda i, name: self.agent(which, mode, i, name, template), index, index + 10,
                                    f"{which}_{mode}")
-        return self.agent(which, mode, index, f"{which}_{mode}"), ""
+        return self.agent(which, mode, index, f"{which}_{mode}", template), ""
 
-    def agent(self, which, mode, index, name):
+    def agent(self, which, mode, index, name, template=None, hold=False):
+        """One run of the one-tool task. template: the template home copied into the run's home before the agent
+        starts (None for a warm-up from an empty home). hold: warm-up only, hold the first model call at the gateway
+        until the agent's startup work has finished (homes.hold_file)."""
+        import homes
         import netns
         from offline_check import AGENT_PROMPT, MCP, codex_config
         d = os.path.join(self.out, name)
         home, ws = os.path.join(d, "home"), os.path.join(d, "ws")
+        if template:
+            homes.copy_template(template, home)
         os.makedirs(home, exist_ok=True)
         os.makedirs(ws, exist_ok=True)
+        hold_file = homes.hold_file(which, home) if hold else None
+        hold_args = ["--hold-until", hold_file, "--hold-max", str(WARMUP_HOLD_MAX)] if hold_file else []
         tool_log = os.path.join(d, "tools.jsonl")
         mcp = {"command": sys.executable, "args": [MCP], "env": {"UT_TOOL_LOG": tool_log, "UT_WORKSPACE": ws}}
         env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "OPENAI_", "CODEX_", "CLAUDE_"))
@@ -676,7 +743,7 @@ class Gate:
             gw = log = None
             if which == "claude":
                 if mode == "gateway":
-                    gw, log, _ = self.start_gateway(net, d, "gw", ANTHROPIC_BASE, 8081)
+                    gw, log, _ = self.start_gateway(net, d, "gw", ANTHROPIC_BASE, 8081, hold_args)
                 base = "http://127.0.0.1:8081" if mode == "gateway" else ANTHROPIC_BASE
                 cfg = os.path.join(d, "mcp.json")
                 with open(cfg, "w") as f:
@@ -689,7 +756,7 @@ class Gate:
                        "mcp__bench__word_count", "--output-format", "json", "--max-turns", "6"]
             else:
                 if mode == "gateway":
-                    gw, log, _ = self.start_gateway(net, d, "gw", RESPONSES_BASE, 8082)
+                    gw, log, _ = self.start_gateway(net, d, "gw", RESPONSES_BASE, 8082, hold_args)
                 base = "http://127.0.0.1:8082" if mode == "gateway" else RESPONSES_BASE + "/"
                 codex_home = os.path.join(home, ".codex")
                 os.makedirs(codex_home, exist_ok=True)
@@ -719,6 +786,7 @@ class Gate:
             fl = flows(cap.path, net.ns_ip)
             events = close_events(cap.path, net.ns_ip)
             wire = wire_facts(cap.path, fl, meta)
+            hosts = host_table(cap.path, net.ns_ip, fl)
         answer = ""
         if which == "claude":
             try:
@@ -733,7 +801,8 @@ class Gate:
         mf = model_flows(fl)
         return dict(which=which, mode=mode, exit=code, seconds=round(took, 1), answer=answer.strip()[-200:],
                     calls=calls, tools=tools, model_flows=mf, pcap=cap.path, drops=upstream_drops(calls, events),
-                    wire=wire,
+                    wire=wire, hosts=hosts, home=home, template=template,
+                    holds=read_jsonl(log, "hold") if log else [],
                     other_hosts=sorted({f.get("sni") for f in fl.values()
                                         if f.get("sni") and f.get("sni") != MODEL_HOST}),
                     stderr_tail=err.strip()[-400:])
@@ -748,7 +817,9 @@ class Gate:
         up_conns = {c["up_conn"] for c in r["calls"] if c["up_conn"]}
         agent_closes = [c for c in r["calls"] if c["error"] and c.get("error_side") == "agent"]
         errors = [c["error"] for c in r["calls"] if c["error"] and c.get("error_side") != "agent"]
-        ok = (r["exit"] == 0 and answered(r["answer"]) and len(model_calls) >= 2 and streamed
+        background = background_downloads(r["hosts"])
+        ok = (r["exit"] == 0 and answered(r["answer"]) and len(model_calls) >= 2 and streamed and r["template"]
+              and not background
               and all(c["status"] == 200 for c in model_calls) and r["tools"] and r["tools"][0]["tool"] == "word_count"
               and len(agent_conns) == len(up_conns) and not errors and r["model_flows"])
         self.record(name, ok,
@@ -759,7 +830,10 @@ class Gate:
                     f"{[(t['tool'], t['args_bytes']) for t in r['tools']]}; "
                     f"agent connections {len(agent_conns)}, upstream connections {len(up_conns)}; calls the agent "
                     f"closed itself {len(agent_closes)}; gateway or endpoint errors {errors}; TLS connections "
-                    f"to {MODEL_HOST} {len(r['model_flows'])}; other hosts {r['other_hosts']}"
+                    f"to {MODEL_HOST} {len(r['model_flows'])}; warm home {bool(r['template'])}; bytes per host: "
+                    f"{describe_hosts(r['hosts'])}"
+                    + (f"; background downloads over {BACKGROUND_DOWNLOAD_LIMIT:,} B: {background}" if background
+                       else "")
                     + (f"; stderr {r['stderr_tail'][-300:]}" if not ok else ""), r)
 
     def fidelity(self, direct, gateway, label):
@@ -776,13 +850,15 @@ class Gate:
             return f"{(g - d) / d * 100:+.1f}%" if d else "n/a"
         sd, sg = summary(direct), summary(gateway)
         wire_ok = wire_verdict(direct["wire"])[0] and wire_verdict(gateway["wire"])[0]
+        bg_direct, bg_gateway = background_downloads(direct["hosts"]), background_downloads(gateway["hosts"])
+        warm = bool(direct["template"]) and bool(gateway["template"])
         probe = getattr(self, "alpn", None) or {}
         server_h2 = probe.get("selected") == "h2"
         direct_h2 = any("h2" in o.split(",") for o in sd["offered"]) and server_h2
         same_protocol = not direct_h2   # the gateway speaks HTTP/1.1 upstream
         same_conns = sd["connections"] == sg["connections"]
         ok = (direct["exit"] == 0 and gateway["exit"] == 0 and "selected" in probe and same_protocol and same_conns
-              and sd["connections"] > 0 and wire_ok)
+              and sd["connections"] > 0 and wire_ok and warm and not bg_direct and not bg_gateway)
         self.record(f"V8 fidelity {label}", ok,
                     (f"ALPN probe of {MODEL_HOST} failed {probe}; " if "selected" not in probe else "")
                     + ("the gateway run is the rerun after an upstream drop; " if gateway.get("first_drops") else "")
@@ -794,8 +870,44 @@ class Gate:
                     f"straight {sd['resent']} B, gateway {sg['resent']} B; tool calls: straight {sd['tool_calls']}, "
                     f"gateway {sg['tool_calls']}; {MODEL_HOST} picks h2 when offered: {server_h2}; same HTTP "
                     f"version on the wire {same_protocol}; same number of connections {same_conns}; wire straight: "
-                    f"{describe_wire(direct['wire'])}; wire through the gateway: {describe_wire(gateway['wire'])}",
-                    dict(direct=sd, gateway=sg, wire_direct=direct["wire"], wire_gateway=gateway["wire"]))
+                    f"{describe_wire(direct['wire'])}; wire through the gateway: {describe_wire(gateway['wire'])}; "
+                    f"warm homes {warm}; bytes per host straight: {describe_hosts(direct['hosts'])}; bytes per host "
+                    f"through the gateway: {describe_hosts(gateway['hosts'])}"
+                    + (f"; background downloads over {BACKGROUND_DOWNLOAD_LIMIT:,} B: straight {bg_direct}, gateway "
+                       f"{bg_gateway}" if bg_direct or bg_gateway else ""),
+                    dict(direct=sd, gateway=sg, wire_direct=direct["wire"], wire_gateway=gateway["wire"],
+                         hosts_direct=direct["hosts"], hosts_gateway=gateway["hosts"]))
+
+    def warm_homes(self) -> dict:
+        """H1: one warm-up run per agent from an empty home, saved as that agent version's template home."""
+        import homes
+        made, lines, data = {}, [], {}
+        for i, which in enumerate(("claude", "codex")):
+            version = homes.agent_version(which)
+            r, note = self.with_rerun(lambda idx, name: self.agent(which, "gateway", idx, name, None, hold=True),
+                                      31 + i, 41 + i, f"warmup_{which}")
+            hold = r["holds"][0] if r["holds"] else None
+            line = (f"{which} {version}: warm-up exit {r['exit']} in {r['seconds']} s, answer {r['answer'][-20:]!r}"
+                    + (f", first model call held {hold['waited']} s, released by {hold['released']}" if hold else "")
+                    + (f" ({note})" if note else "") + f"; bytes per host: {describe_hosts(r['hosts'])}")
+            try:
+                if r["exit"] != 0 or not answered(r["answer"]) or r["drops"]:
+                    raise RuntimeError("the warm-up run did not complete")
+                dest = homes.save_template(r["home"], HOMES_ROOT, which, version,
+                                           dict(warmup_run=os.path.relpath(os.path.dirname(r["home"]), self.out),
+                                                warmup_hosts=r["hosts"], warmup_hold=hold), self.key)
+                t = homes.load_template(HOMES_ROOT, which, version)
+                made[which] = t["home"]
+                line += f"; template {os.path.relpath(dest, REPO)} ({t['home_bytes']:,} B)" + (
+                    f", Codex plugin catalogue {t['codex_plugins']['sha'][:12]} "
+                    f"({t['codex_plugins']['repo_bytes']:,} B)" if which == "codex" else "")
+                data[which] = dict(template=t, warmup_hosts=r["hosts"], hold=hold)
+            except Exception as e:
+                line += f"; NOT SAVED: {e}"
+                data[which] = dict(error=str(e), warmup_hosts=r["hosts"], hold=hold)
+            lines.append(line)
+        self.record("H1 warm homes", len(made) == 2, " | ".join(lines), data)
+        return made
 
     def guard(self, name, fn, *args):
         try:
@@ -850,16 +962,21 @@ def main(argv=None):
         g.guard("V2 isolation", g.isolation)
         g.guard("V3 Anthropic API", g.anthropic_api)
         g.guard("V5 Responses API", g.responses_api)
+        templates = g.guard("H1 warm homes", g.warm_homes) or {}
         runs = {}
         for i, (which, mode) in enumerate([("claude", "gateway"), ("codex", "gateway"), ("claude", "direct"),
                                            ("codex", "direct")]):
-            runs[(which, mode)] = g.guard(f"{which} {mode} run", g.agent_run, which, mode, 15 + i) or (None, "")
+            if which not in templates:
+                runs[(which, mode)] = (None, "")
+                continue
+            runs[(which, mode)] = g.guard(f"{which} {mode} run", g.agent_run, which, mode, 15 + i,
+                                          templates[which]) or (None, "")
         for name, run_key in (("V6 Claude Code", ("claude", "gateway")), ("V7 Codex", ("codex", "gateway"))):
             run, note = runs[run_key]
             if run:
                 g.agent_check(name, run, note)
             else:
-                g.record(name, False, "the run did not complete")
+                g.record(name, False, "the run did not complete or there is no warm home (H1)")
         for label, which in (("Claude Code", "claude"), ("Codex", "codex")):
             direct, gateway = runs[(which, "direct")][0], runs[(which, "gateway")][0]
             if direct and gateway and not gateway["drops"]:
@@ -881,8 +998,8 @@ def main(argv=None):
         "GATE 1 Codex on DeepSeek (V5, V7)": all(passed.get(k) for k in ("V5", "V7")),
         "GATE 2 gateway keeps the traffic shape (V1, V3, V8)": all(passed.get(k) for k in ("V1", "V3")) and fid
         and all(fid),
-        "TESTBED isolation, capture, key log, Claude Code (V0, V2, V4, V6)": all(
-            passed.get(k) for k in ("V0", "V2", "V4", "V6")),
+        "TESTBED isolation, capture, key log, Claude Code, warm homes (V0, V2, V4, V6, H1)": all(
+            passed.get(k) for k in ("V0", "V2", "V4", "V6", "H1")),
     }
     print()
     for name, ok in gates.items():
