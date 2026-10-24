@@ -9,24 +9,30 @@ three times, always through the gateway, each run from a private copy of that ag
 its own network namespace, one run at a time: 10 tasks x 2 agents x 3 repeats = 60 runs. Nothing in this step injects
 or leaks anything; every run is benign.
 
-Each agent keeps its default tool set next to the four benign MCP tools. Under the settings here, tested with the
-pinned versions: Claude Code in print mode runs its Read tool inside the workspace and read-only Bash commands, and
-refuses Read outside the workspace, Write, Edit, WebFetch and WebSearch; Codex (workspace-write sandbox, approval never,
-web search disabled) runs shell commands that read anywhere and write in the workspace, with network blocked inside
-the sandbox. The MCP tool log sees only MCP calls, so every tool call, built-in or MCP, is also taken from the agent's
-own event output (Claude Code --output-format stream-json, Codex exec --json); switching to that output leaves every
-request byte for byte the same.
+Each agent keeps its default tool set next to the four benign MCP tools, and both get the same terms, as closely as
+the pinned versions allow (tested with them): write access in the workspace, a shell that runs any command, no network
+from their tools, and no writes outside the workspace other than temporary files. Codex runs with its workspace-write sandbox (approval
+never, web search disabled). Claude Code runs with permission mode acceptEdits (its file tools write inside the
+workspace without asking) and with Bash allowed inside Claude Code's own sandbox (CLAUDE_SETTINGS: bubblewrap, writes
+only in the workspace and Claude Code's temporary folder, no network, no way to run a command outside the sandbox, and
+no start at all when the sandbox cannot run); its file tools still refuse paths outside the workspace, and WebFetch
+and WebSearch are refused. The MCP tool log sees only MCP calls, so every tool call, built-in or MCP, and every
+permission refusal is also taken from the agent's own event output (Claude Code --output-format stream-json, Codex exec
+--json); switching to that output leaves every request byte for byte the same.
 
 What each run keeps (under data/harness/pilot/<stamp>/runs/<run_id>/, git-ignored):
   gw_calls.jsonl    the gateway call log (one JSON line per call, exact request and response body lengths)
   tools.jsonl       the MCP tool log (one line per MCP tool call, argument sizes at the tool boundary)
-  agent_tools.jsonl every tool call from the agent's event output: tool, built-in or MCP, input and output sizes
+  agent_tools.jsonl every tool call from the agent's event output (tool, built-in or MCP, input and output sizes,
+                    refused or not), and every permission refusal as its own entry (kind permission_denied)
+  claude_settings.json (Claude Code) the settings file the run was given
   run.pcap          the packet capture of the run on its own interface
   net.json          the run's network settings and capture counts
   agent_stdout.txt, agent_stderr.txt, last_message.txt (Codex), ws/ (the workspace with the agent's outputs)
   labels.json       the per-call ground-truth label table built from the run's key log (label_calls)
-  manifest.json     task, agent, version, model, repeat, template id, start and end times, exit status, model-call
-                    statuses, wire verdict, bytes per host, drops, labels summary, tool-call counts, balance
+  manifest.json     task, agent, version, model, repeat, template id, agent settings, start and end times, exit status,
+                    model-call statuses, wire verdict, bytes per host, drops, labels summary, tool calls, permission
+                    refusals, balance
 The key log is deleted the moment labels.json is written and is never an input to any detector. The run's home (a copy
 of the template, about 85 MB for Codex) is deleted after the run; the manifest names the template it was copied from.
 
@@ -83,8 +89,19 @@ CODEX_BACKGROUND_HOST = "ab.chatgpt.com"
 PILOT_ROOT = os.path.join(REPO, "data", "harness", "pilot")
 AGENTS = ["claude", "codex"]
 
-# Claude Code may call the four benign workspace tools without asking (the gate allowed only word_count)
-ALLOWED_TOOLS = ["mcp__bench__word_count", "mcp__bench__list_dir", "mcp__bench__read_file", "mcp__bench__write_file"]
+# Claude Code may call the four benign workspace tools and Bash without asking (the gate allowed only word_count).
+# Bash is safe to allow because every command runs inside Claude Code's sandbox, set by CLAUDE_SETTINGS: writes only in
+# the working directory (the workspace) and Claude Code's temporary folder, no network (no domain allowed), commands
+# cannot leave the sandbox, and Claude Code refuses to start when the sandbox cannot run (it needs bubblewrap and
+# socat). acceptEdits lets its file tools write inside the workspace without asking; outside it they still refuse.
+ALLOWED_TOOLS = ["mcp__bench__word_count", "mcp__bench__list_dir", "mcp__bench__read_file", "mcp__bench__write_file",
+                 "Bash"]
+CLAUDE_PERMISSION_MODE = "acceptEdits"
+CLAUDE_SETTINGS = {"sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False,
+                               "failIfUnavailable": True, "network": {"allowedDomains": []}}}
+SANDBOX_COMMANDS = ("bwrap", "socat")
+# Codex's settings, as offline_check.codex_config writes them for the gate and the pilot
+CODEX_SETTINGS = {"sandbox_mode": "workspace-write", "approval_policy": "never", "web_search": "disabled"}
 
 # cost guard
 BALANCE_URL = "https://api.deepseek.com/user/balance"
@@ -247,93 +264,170 @@ def label_calls(pcap: str, keylog: str, calls: list, model_streams: list) -> dic
 
 
 # ---------------------------------------------------------------- every tool call, from the agent's event output
+# Event fields are read only when they have the expected type: a nested field of another type (for example a system
+# event whose message is a string) is skipped, never fatal.
+def as_dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def as_list(value) -> list:
+    return value if isinstance(value, list) else []
+
+
+def as_str(value) -> str | None:
+    return value if isinstance(value, str) else None
+
+
 def utf8_len(value) -> int:
     if value is None:
         return 0
     if isinstance(value, str):
         return len(value.encode("utf-8"))
-    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False, default=str).encode("utf-8"))
 
 
 def block_text(content) -> str:
+    """The text of a tool result: a string, or the text of the text blocks in a list."""
     if isinstance(content, str):
         return content
-    return "".join(x.get("text", "") for x in content or [] if isinstance(x, dict))
+    return "".join(x["text"] for x in as_list(content) if isinstance(x, dict) and isinstance(x.get("text"), str))
 
 
-def claude_events(stdout: str) -> dict:
-    """Claude Code stream-json: the final result event, its answer, and every tool call with its result. A call made
-    inside a subagent carries the id of the subagent's tool call in parent."""
-    calls, by_id, result = [], {}, {}
+def json_events(stdout: str):
     for line in stdout.splitlines():
         try:
             ev = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(ev, dict):
-            continue
+        if isinstance(ev, dict):
+            yield ev
+
+
+def claude_events(stdout: str) -> dict:
+    """Claude Code stream-json: the final result event and its answer, every tool call with its result, and every
+    permission refusal (a system event with subtype permission_denied), each refusal as its own entry. A call made
+    inside a subagent carries the id of the subagent's tool call in parent; a refused call is marked denied."""
+    calls, by_id, denials, systems, result = [], {}, [], {}, {}
+    for ev in json_events(stdout):
         kind = ev.get("type")
-        content = (ev.get("message") or {}).get("content")
-        if kind == "assistant" and isinstance(content, list):
-            for b in content:
-                if isinstance(b, dict) and b.get("type") == "tool_use":
-                    name = b.get("name", "")
-                    rec = dict(tool=name, source="mcp" if name.startswith("mcp__") else "builtin", id=b.get("id"),
-                               parent=ev.get("parent_tool_use_id"), input_bytes=utf8_len(b.get("input")),
-                               output_bytes=None, is_error=None)
-                    calls.append(rec)
-                    by_id[b.get("id")] = rec
-        elif kind == "user" and isinstance(content, list):
-            for b in content:
-                if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") in by_id:
-                    by_id[b["tool_use_id"]].update(output_bytes=utf8_len(block_text(b.get("content"))),
-                                                   is_error=bool(b.get("is_error")))
-        elif kind == "result":
+        if kind == "system":
+            sub = as_str(ev.get("subtype")) or "unknown"
+            systems[sub] = systems.get(sub, 0) + 1
+            if sub == "permission_denied":
+                reason = as_str(ev.get("decision_reason")) or as_str(ev.get("message"))
+                denials.append(dict(kind="permission_denied", tool=as_str(ev.get("tool_name")) or "",
+                                    id=as_str(ev.get("tool_use_id")),
+                                    reason_type=as_str(ev.get("decision_reason_type")),
+                                    reason=reason[:300] if reason else None))
+            continue
+        if kind == "result":
             result = ev
-    return dict(answer=str(result.get("result", "")) if result else "", tool_calls=calls,
+            continue
+        content = as_list(as_dict(ev.get("message")).get("content"))
+        if kind == "assistant":
+            for b in map(as_dict, content):
+                if b.get("type") == "tool_use":
+                    name = as_str(b.get("name")) or ""
+                    rec = dict(kind="tool_call", tool=name, source="mcp" if name.startswith("mcp__") else "builtin",
+                               id=as_str(b.get("id")), parent=as_str(ev.get("parent_tool_use_id")),
+                               input_bytes=utf8_len(b.get("input")), output_bytes=None, is_error=None, denied=False)
+                    calls.append(rec)
+                    if rec["id"]:
+                        by_id[rec["id"]] = rec
+        elif kind == "user":
+            for b in map(as_dict, content):
+                tid = as_str(b.get("tool_use_id"))
+                if b.get("type") == "tool_result" and tid in by_id:
+                    by_id[tid].update(output_bytes=utf8_len(block_text(b.get("content"))),
+                                      is_error=bool(b.get("is_error")))
+    for d in denials:
+        if d["id"] in by_id:
+            by_id[d["id"]]["denied"] = True
+    ok = result.get("subtype") == "success" and not result.get("is_error")
+    return dict(answer=str(result.get("result") or "") if result else "", tool_calls=calls, denials=denials,
+                system_events=systems,
                 result={k: result.get(k) for k in ("subtype", "is_error", "num_turns", "stop_reason",
                                                    "terminal_reason", "api_error_status")} if result else {},
-                permission_denials=len(result.get("permission_denials") or []) if result else 0,
-                error=None if result and result.get("subtype") == "success" and not result.get("is_error")
-                else (f"result {result.get('subtype')}" if result else "no result event"))
+                result_permission_denials=len(as_list(result.get("permission_denials"))),
+                error=None if ok else (f"result {result.get('subtype')}" if result else "no result event"))
 
 
 CODEX_NOT_TOOLS = {"agent_message", "reasoning", "error", "todo_list"}
 
 
 def codex_events(stdout: str) -> dict:
-    """Codex exec --json: every tool call (shell commands, MCP calls, and any other tool item) and turn failures."""
-    calls, errors, usage = [], [], {}
-    for line in stdout.splitlines():
-        try:
-            ev = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(ev, dict):
-            continue
+    """Codex exec --json: every tool call (shell commands, MCP calls, and any other tool item), turn failures, and
+    error events. Codex asks for nothing (approval never), so it has no refusals; a command its sandbox stops fails,
+    and shows as a tool call with is_error."""
+    calls, errors, reported, usage = [], [], [], {}
+    for ev in json_events(stdout):
         kind = ev.get("type")
         if kind == "item.completed":
-            it = ev.get("item") or {}
-            t = it.get("type")
+            it = as_dict(ev.get("item"))
+            t = as_str(it.get("type"))
             if t == "command_execution":
-                calls.append(dict(tool="command_execution", source="builtin", id=it.get("id"), parent=None,
-                                  input_bytes=utf8_len(it.get("command")),
+                calls.append(dict(kind="tool_call", tool="command_execution", source="builtin", id=as_str(it.get("id")),
+                                  parent=None, input_bytes=utf8_len(it.get("command")),
                                   output_bytes=utf8_len(it.get("aggregated_output")),
-                                  is_error=it.get("status") == "failed" or it.get("exit_code") not in (0, None)))
+                                  is_error=it.get("status") == "failed" or it.get("exit_code") not in (0, None),
+                                  denied=False))
             elif t == "mcp_tool_call":
-                res = it.get("result") or {}
-                calls.append(dict(tool=f"mcp__{it.get('server')}__{it.get('tool')}", source="mcp", id=it.get("id"),
-                                  parent=None, input_bytes=utf8_len(it.get("arguments")),
-                                  output_bytes=utf8_len(block_text(res.get("content"))),
-                                  is_error=bool(it.get("error")) or it.get("status") == "failed"))
+                calls.append(dict(kind="tool_call", tool=f"mcp__{as_str(it.get('server'))}__{as_str(it.get('tool'))}",
+                                  source="mcp", id=as_str(it.get("id")), parent=None,
+                                  input_bytes=utf8_len(it.get("arguments")),
+                                  output_bytes=utf8_len(block_text(as_dict(it.get("result")).get("content"))),
+                                  is_error=bool(it.get("error")) or it.get("status") == "failed", denied=False))
             elif t and t not in CODEX_NOT_TOOLS:
-                calls.append(dict(tool=t, source="builtin", id=it.get("id"), parent=None, input_bytes=None,
-                                  output_bytes=None, is_error=it.get("status") == "failed"))
+                calls.append(dict(kind="tool_call", tool=t, source="builtin", id=as_str(it.get("id")), parent=None,
+                                  input_bytes=None, output_bytes=None, is_error=it.get("status") == "failed",
+                                  denied=False))
         elif kind == "turn.failed":
-            errors.append(str((ev.get("error") or {}).get("message") or ev)[:300])
+            err = ev.get("error")
+            msg = as_str(as_dict(err).get("message")) if isinstance(err, dict) else as_str(err)
+            errors.append((msg or "turn failed")[:300])
+        elif kind == "error":
+            reported.append((as_str(ev.get("message")) or "error event")[:300])
         elif kind == "turn.completed":
-            usage = ev.get("usage") or {}
-    return dict(tool_calls=calls, usage=usage, error="; ".join(errors) if errors else None)
+            usage = as_dict(ev.get("usage"))
+    return dict(tool_calls=calls, denials=[], usage=usage, reported_errors=reported,
+                error="; ".join(errors) if errors else None)
+
+
+# ---------------------------------------------------------------- agent settings
+def claude_command(prompt: str, mcp_config: str, settings_file: str) -> list[str]:
+    return ["claude", "-p", prompt, "--mcp-config", mcp_config, "--strict-mcp-config",
+            "--allowedTools", ",".join(ALLOWED_TOOLS), "--permission-mode", CLAUDE_PERMISSION_MODE,
+            "--settings", settings_file, "--output-format", "stream-json", "--verbose",
+            "--max-turns", str(CLAUDE_MAX_TURNS)]
+
+
+def codex_command(ws: str, last_message: str, prompt: str) -> list[str]:
+    return ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "--json", "-C", ws, "-o", last_message, prompt]
+
+
+def agent_settings(which: str) -> dict:
+    """The tool and permission settings a run's agent had, for its manifest."""
+    if which == "claude":
+        return dict(permission_mode=CLAUDE_PERMISSION_MODE, allowed_tools=list(ALLOWED_TOOLS),
+                    settings=CLAUDE_SETTINGS)
+    return dict(CODEX_SETTINGS)
+
+
+def sandbox_check(which=shutil.which, run=subprocess.run) -> dict:
+    """Claude Code's sandbox needs bubblewrap and socat. Checks both are installed and that bubblewrap can start a
+    sandbox without network, as Claude Code does; the pilot stops before its first run when this fails (Claude Code
+    would refuse to start in every run)."""
+    missing = [c for c in SANDBOX_COMMANDS if not which(c)]
+    if missing:
+        return dict(ok=False, detail=f"missing {', '.join(missing)}; sudo bash harness/vm_setup.sh installs them")
+    try:
+        r = run(["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--unshare-net", "true"],
+                capture_output=True, text=True, timeout=60)
+    except Exception as e:
+        return dict(ok=False, detail=f"bubblewrap could not run: {type(e).__name__}: {e}")
+    if r.returncode != 0:
+        return dict(ok=False, detail=f"bubblewrap could not start a sandbox: {(r.stderr or '').strip()[-300:]}")
+    return dict(ok=True, detail="bubblewrap and socat installed; bubblewrap starts a sandbox without network")
 
 
 # ---------------------------------------------------------------- one benign run
@@ -405,9 +499,10 @@ def write_json(path: str, data) -> None:
 def run_once(gate: vm_gate.Gate, which: str, task: dict, repeat: int, index: int, template: dict,
              run_dir: str) -> dict:
     """One benign run of one task with one agent, through the gateway, from a copy of the warm template home, in its
-    own namespace. Mirrors vm_gate.Gate.agent for the plumbing, with this task's prompt and workspace, the four benign
-    MCP tools allowed, and the agent's event output. Writes labels.json from the key log and deletes the key log, then
-    deletes the run's home."""
+    own namespace. Mirrors vm_gate.Gate.agent for the plumbing, with this task's prompt and workspace, the agent
+    settings above, and the agent's event output. Writes labels.json from the key log and deletes the key log, then
+    reads the event output and deletes the run's home. An error after the agent has finished (while reading its event
+    output) leaves the capture, the call log and labels.json in place, with the key log already deleted."""
     os.makedirs(run_dir, exist_ok=True)
     home, ws = os.path.join(run_dir, "home"), os.path.join(run_dir, "ws")
     keylog = os.path.join(run_dir, "gw.keys")
@@ -437,9 +532,9 @@ def run_once(gate: vm_gate.Gate, which: str, task: dict, repeat: int, index: int
                                ANTHROPIC_MODEL="deepseek-flash[1m]", ANTHROPIC_DEFAULT_OPUS_MODEL="deepseek-flash[1m]",
                                ANTHROPIC_DEFAULT_SONNET_MODEL="deepseek-flash[1m]",
                                ANTHROPIC_DEFAULT_HAIKU_MODEL="deepseek-flash")
-                    cmd = ["claude", "-p", task["prompt"], "--mcp-config", cfg, "--strict-mcp-config",
-                           "--allowedTools", ",".join(ALLOWED_TOOLS), "--output-format", "stream-json", "--verbose",
-                           "--max-turns", str(CLAUDE_MAX_TURNS)]
+                    settings_file = os.path.join(run_dir, "claude_settings.json")
+                    write_json(settings_file, CLAUDE_SETTINGS)
+                    cmd = claude_command(task["prompt"], cfg, settings_file)
                 else:
                     gw, log, _ = gate.start_gateway(net, run_dir, "gw", RESPONSES_BASE, 8082)
                     codex_home = os.path.join(home, ".codex")
@@ -447,8 +542,7 @@ def run_once(gate: vm_gate.Gate, which: str, task: dict, repeat: int, index: int
                     with open(os.path.join(codex_home, "config.toml"), "w") as f:
                         f.write(codex_config("http://127.0.0.1:8082", mcp))
                     env.update(CODEX_HOME=codex_home, DEEPSEEK_API_KEY=gate.key)
-                    cmd = ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "--json", "-C", ws, "-o",
-                           last_message, task["prompt"]]
+                    cmd = codex_command(ws, last_message, task["prompt"])
                 t0 = time.time()
                 start_iso = time.strftime("%Y-%m-%dT%H:%M:%S%z")
                 try:
@@ -499,7 +593,7 @@ def run_once(gate: vm_gate.Gate, which: str, task: dict, repeat: int, index: int
             with open(last_message) as f:
                 answer = f.read()
     with open(os.path.join(run_dir, "agent_tools.jsonl"), "w") as f:
-        for c in ev["tool_calls"]:
+        for c in ev["tool_calls"] + ev["denials"]:
             f.write(json.dumps(c) + "\n")
     tools = vm_gate.read_jsonl(tool_log, "tool_call")
     model_calls = [c for c in calls if is_model_path(c.get("path"))]
@@ -520,9 +614,12 @@ def run_once(gate: vm_gate.Gate, which: str, task: dict, repeat: int, index: int
         codex_plugins_sha=template.get("codex_plugins_sha"), start=start_iso, end=end_iso, seconds=round(took, 1),
         exit=code, answer=answer.strip()[-200:], model_calls=len(model_calls), model_statuses=statuses,
         model_request_bytes=sum(c.get("req_body_bytes", 0) for c in model_calls), endpoint_errors=endpoint_errors,
-        agent_error=ev["error"], completed=completed, permission_denials=ev.get("permission_denials", 0),
-        mcp_tool_calls=[(t["tool"], t["args_bytes"]) for t in tools],
-        agent_tool_calls=[(c["tool"], c["source"], c["input_bytes"], c["output_bytes"]) for c in ev["tool_calls"]],
+        agent_error=ev["error"], completed=completed, agent_settings=agent_settings(which),
+        permission_denied=[(d["tool"], d["reason"]) for d in ev["denials"]], permission_denials=len(ev["denials"]),
+        result_permission_denials=ev.get("result_permission_denials"), system_events=ev.get("system_events", {}),
+        reported_errors=ev.get("reported_errors", []), mcp_tool_calls=[(t["tool"], t["args_bytes"]) for t in tools],
+        agent_tool_calls=[(c["tool"], c["source"], c["input_bytes"], c["output_bytes"], c["denied"])
+                          for c in ev["tool_calls"]],
         builtin_tool_calls=len(ev["tool_calls"]) - len(mcp_events), mcp_event_calls=len(mcp_events),
         mcp_log_matches=len(mcp_events) == len(tools), outputs_written=outputs_written,
         wire_clean=wire_ok, wire_fails=wire_fails, wire=wire, hosts=hosts,
@@ -544,14 +641,16 @@ def manifest_complete(manifest: dict) -> bool:
 
 
 def write_manifest(run_dir: str, record: dict) -> dict:
-    """The run manifest: task, agent, version, model, repeat, home template id, start and end times, exit status,
-    model-call statuses, wire verdict, bytes per host, drops, labels summary and tool-call counts."""
+    """The run manifest: task, agent, version, model, repeat, home template id, agent settings, start and end times,
+    exit status, model-call statuses, wire verdict, bytes per host, drops, labels summary, tool calls and permission
+    refusals."""
     manifest = dict(
         run_id=record["run_id"], task=record["task"], scenario=record["scenario"], agent=record["agent"],
         version=record["version"], model=record["model"], repeat=record["repeat"],
         home_template=record["template_home"], home_template_saved=record["template_saved"],
-        codex_plugins_sha=record["codex_plugins_sha"], start=record["start"], end=record["end"],
-        seconds=record["seconds"], exit=record["exit"], model_calls=record["model_calls"],
+        codex_plugins_sha=record["codex_plugins_sha"], agent_settings=record["agent_settings"],
+        start=record["start"], end=record["end"], seconds=record["seconds"], exit=record["exit"],
+        model_calls=record["model_calls"],
         model_statuses=record["model_statuses"], model_request_bytes=record["model_request_bytes"],
         endpoint_errors=record["endpoint_errors"], agent_error=record["agent_error"], completed=record["completed"],
         wire_verdict="clean" if record["wire_clean"] else "fail", wire_fails=record["wire_fails"],
@@ -561,7 +660,9 @@ def write_manifest(run_dir: str, record: dict) -> dict:
         label_agreement=record["label_agreement"], labels_ok=record["labels_ok"],
         mcp_tool_calls=record["mcp_tool_calls"], agent_tool_calls=record["agent_tool_calls"],
         builtin_tool_calls=record["builtin_tool_calls"], mcp_log_matches=record["mcp_log_matches"],
-        permission_denials=record["permission_denials"], outputs_written=record["outputs_written"],
+        permission_denials=record["permission_denials"], permission_denied=record["permission_denied"],
+        result_permission_denials=record["result_permission_denials"], system_events=record["system_events"],
+        reported_errors=record["reported_errors"], outputs_written=record["outputs_written"],
         processes_left_in_namespace=record["processes_left_in_namespace"], key_found_in=record["key_found_in"],
         balance_before=record.get("balance_before"), answer=record["answer"])
     manifest["complete"] = manifest_complete(manifest)
@@ -576,6 +677,7 @@ def summary_row(rec: dict, manifest: dict, note: str) -> dict:
                 model_request_bytes=rec["model_request_bytes"], wire_clean=rec["wire_clean"],
                 labels_ok=rec["labels_ok"], label_agreement=rec["label_agreement"],
                 builtin_tool_calls=rec["builtin_tool_calls"], mcp_tool_calls=len(rec["mcp_tool_calls"]),
+                permission_denials=rec["permission_denials"],
                 mcp_log_matches=rec["mcp_log_matches"], background_over_limit=rec["background_over_limit"],
                 codex_ab_chatgpt_up=rec["codex_ab_chatgpt_up"], manifest_complete=manifest["complete"],
                 reran_after_drop=rec.get("reran_after_drop", False), flagged_drop=rec.get("flagged_drop", False),
@@ -591,7 +693,8 @@ def row_from_manifest(manifest: dict) -> dict:
                 model_statuses=m["model_statuses"], model_request_bytes=m["model_request_bytes"],
                 wire_clean=m["wire_verdict"] == "clean", labels_ok=m["labels_ok"],
                 label_agreement=m["label_agreement"], builtin_tool_calls=m["builtin_tool_calls"],
-                mcp_tool_calls=len(m["mcp_tool_calls"]), mcp_log_matches=m["mcp_log_matches"],
+                mcp_tool_calls=len(m["mcp_tool_calls"]), permission_denials=m["permission_denials"],
+                mcp_log_matches=m["mcp_log_matches"],
                 background_over_limit=m["background_over_limit"], codex_ab_chatgpt_up=m["codex_ab_chatgpt_up"],
                 manifest_complete=m["complete"], reran_after_drop=m["reran_after_drop"],
                 flagged_drop=m["flagged_drop"], drops=len(m["drops"]), key_found_in=m["key_found_in"],
@@ -605,11 +708,27 @@ def error_row(run_id: str, task: dict, which: str, repeat: int, exc: BaseExcepti
                 traceback=traceback.format_exc()[-2000:])
 
 
+def set_aside_error(run_dir: str) -> dict:
+    """Sets aside the folder of a run that stopped on an error and says what it kept: every file except the home copy
+    and the key log (set_aside removes both), so a run that stopped after the agent finished keeps its capture, call
+    log and labels."""
+    dest = set_aside(run_dir, "error")
+    files = sorted(os.path.relpath(os.path.join(b, f), dest) for b, _, fs in os.walk(dest) for f in fs)
+    return dict(run_dir=os.path.basename(dest), kept_files=[f for f in files if not f.startswith("ws" + os.sep)],
+                workspace_files=sum(1 for f in files if f.startswith("ws" + os.sep)),
+                capture_kept=os.path.exists(os.path.join(dest, "run.pcap")),
+                call_log_kept=os.path.exists(os.path.join(dest, "gw_calls.jsonl")),
+                labels_kept=os.path.exists(os.path.join(dest, "labels.json")),
+                key_log_left=any(f.endswith(".keys") for f in files),
+                home_left=os.path.isdir(os.path.join(dest, "home")))
+
+
 def describe_run(rec: dict, manifest: dict) -> str:
     return (f"exit {rec['exit']} in {rec['seconds']} s, completed {rec['completed']}; model calls {rec['model_calls']} "
             f"(statuses {rec['model_statuses']}); wire "
             f"{'clean' if rec['wire_clean'] else 'FAIL ' + str(rec['wire_fails'])}; labels ok {rec['labels_ok']} "
-            f"(agreement {rec['label_agreement']}); tool calls {rec['agent_tool_calls']}; MCP log matches "
+            f"(agreement {rec['label_agreement']}); tool calls {rec['agent_tool_calls']}; permission refusals "
+            f"{rec['permission_denied']}; MCP log matches "
             f"{rec['mcp_log_matches']}; bytes per host {vm_gate.describe_hosts(rec['hosts'])}; manifest complete "
             f"{manifest['complete']}"
             + (f"; background over {BACKGROUND_DOWNLOAD_LIMIT:,} B {rec['background_over_limit']}"
@@ -745,6 +864,14 @@ def run_pilot(key: str, out: str, balance_floor: float, only_task: str | None, o
         report["gate"] += gate.results
         finish(report, out, True)
         return report
+    if "claude" in {a for _, a, _ in planned}:
+        report["sandbox_check"] = sandbox_check()
+        print(f"Claude Code sandbox: {report['sandbox_check']['detail']}", flush=True)
+        if not report["sandbox_check"]["ok"]:
+            report["stopped_early"] = f"Claude Code sandbox cannot start: {report['sandbox_check']['detail']}"
+            report["gate"] += gate.results
+            finish(report, out, True)
+            return report
     netns.cleanup_all()
     templates = make_templates(gate)
     report["gate"] += gate.results
@@ -811,7 +938,7 @@ def run_pilot(key: str, out: str, balance_floor: float, only_task: str | None, o
             print(f"ERROR {run_id}: {row['note']}", flush=True)
             delete_keylogs(run_dir)
             if os.path.exists(run_dir):
-                row["run_dir"] = os.path.basename(set_aside(run_dir, "error"))
+                row.update(set_aside_error(run_dir))
             report["runs"].append(row)
             try:
                 netns.cleanup_all()

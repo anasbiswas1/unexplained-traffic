@@ -14,7 +14,7 @@ per-run network isolation need control of the operating system. Everything after
 | `vm_gate.py` | Checks on the VM before any collection: isolation and capture, DeepSeek Anthropic and Responses APIs through the gateway, key-log decryption, both agents through the gateway, and the traffic of each agent straight to DeepSeek compared with its traffic through the gateway. |
 | `pilot_tasks.py` | The ten benign tasks of the collection pilot and their synthetic workspace inputs. |
 | `pilot.py` | The collection pilot: 60 benign runs through the harness, per-run labels, tool-call record, cost guard, manifests, resume and the pilot quality marks. |
-| `vm_setup.sh` | Installs the system packages (including ethtool), Node.js 22 and the pinned agent versions on Ubuntu 24.04. |
+| `vm_setup.sh` | Installs the system packages (including ethtool, and bubblewrap and socat for Claude Code's command sandbox), Node.js 22 and the pinned agent versions on Ubuntu 24.04. |
 
 ## VM gate
 
@@ -70,28 +70,65 @@ agent starts, and no task needs the public internet, a real credential or real p
 used: uncontrolled third-party traffic would break the clean benign floor (model host plus the agent's own background
 channel) and differ between the three repeats.
 
-Each agent keeps its default tool set next to the four benign MCP tools. With the settings used here (tested with the
-pinned versions), Claude Code in print mode runs its Read tool inside the workspace and read-only Bash commands, and
-refuses Read outside the workspace, Write, Edit, WebFetch and WebSearch; Codex (workspace-write sandbox, approval never,
-web search disabled) runs shell commands that can read outside the workspace and write inside it, with network blocked
-inside its sandbox. The MCP tool log sees only MCP calls, so the pilot also records every tool call, built-in or MCP,
-from the agent's own event output (Claude Code `--output-format stream-json`, Codex `exec --json`). Switching to that
-output leaves every request byte for byte the same.
+Each agent keeps its default tool set next to the four benign MCP tools, and both get the same terms as closely as
+the pinned versions allow: write access in the workspace, a shell that runs any command, no network from their tools,
+and no writes outside the workspace other than temporary files (see the differences below).
+
+- Codex: workspace-write sandbox, approval never, web search disabled (as in the gate).
+- Claude Code: permission mode `acceptEdits` (its Write and Edit tools write inside the workspace without asking) and
+  Bash allowed, with every Bash command inside Claude Code's own sandbox, set in the run's `claude_settings.json`:
+  `sandbox.enabled`, `autoAllowBashIfSandboxed`, `allowUnsandboxedCommands: false` (a command cannot ask to run
+  outside the sandbox), `failIfUnavailable: true` (Claude Code refuses to start when the sandbox cannot run) and no
+  allowed network domain. The sandbox needs bubblewrap and socat (`vm_setup.sh` installs both); the pilot checks them
+  before its first run and stops if bubblewrap cannot start a sandbox.
+
+Tested with the pinned versions (Claude Code 2.1.302, Codex 0.163.0), from a workspace outside `/tmp` as on the VM:
+
+| | Claude Code | Codex |
+|---|---|---|
+| write a file in the workspace (file tool or shell) | runs | runs (shell) |
+| shell commands of any form (pipes, loops, variables, here-documents, Python) | run | run |
+| write outside the workspace from the shell (parent folder, `/root`) | read-only file system | read-only file system |
+| write outside the workspace with a file tool | refused | (no file tool) |
+| network from the shell | blocked | blocked |
+| read outside the workspace from the shell | runs | runs |
+| read outside the workspace with the Read tool | refused | (no Read tool) |
+| fetch or search the web with a built-in tool | refused (WebFetch, WebSearch) | disabled |
+
+The differences that remain:
+
+- Temporary files: Codex's shell may also write anywhere in `/tmp`; Claude Code's sandboxed shell may write only to
+  its own temporary folder, which it sets as the shell's `TMPDIR` (`/tmp/claude-0` when it runs as root). The run's
+  home is read-only to it.
+- Request size: the sandbox adds its rules to the description of Claude Code's Bash tool, so each Claude Code model
+  request is about 6.8 KB larger than with the gate's settings (76,597 to 83,432 bytes for the same first request);
+  `acceptEdits` and allowing Bash do not change the request. The gate's gateway-versus-direct comparison (V8) used the
+  gate's settings.
+- Refusals: what Claude Code still refuses (its file tools outside the workspace, WebFetch, WebSearch) appears as a
+  `permission_denied` entry in `agent_tools.jsonl` and the manifest. Codex asks for nothing (approval never); a command
+  its sandbox stops simply fails, and shows as a failed shell call.
+
+The MCP tool log sees only MCP calls, so the pilot also records every tool call, built-in or MCP, and every permission
+refusal from the agent's own event output (Claude Code `--output-format stream-json`, Codex `exec --json`). Switching to
+that output leaves every request byte for byte the same. The readers take a nested field only when it has the expected
+type (a refusal event's `message` is a string, for example), so an event of an unexpected shape is skipped, not fatal.
 
 Each run keeps, under `data/harness/pilot/<time>/runs/<run_id>/` (git-ignored): the gateway call log, the MCP tool log,
-`agent_tools.jsonl` (every tool call from the event output), the capture, `net.json`, the agent output, the workspace,
-`labels.json` and `manifest.json`. `labels.json` is the per-call ground-truth table built straight after the run from
-its TLS key log, the same decryption the gate's V4 does: each logged call is paired with the decrypted request sent on
-the same upstream connection (in order within that connection) and its decrypted length is checked against the
-gateway's logged length. The key log is deleted the moment `labels.json` is written and is never a detector input. The
-run's home (a copy of the template, about 85 MB for Codex) is deleted after the run; the manifest names the template.
+`agent_tools.jsonl` (every tool call and permission refusal from the event output), the capture, `net.json`, the agent
+output, the workspace, `labels.json`, `manifest.json` and, for Claude Code, `claude_settings.json`. `labels.json` is the
+per-call ground-truth table built straight after the run from its TLS key log, the same decryption the gate's V4 does:
+each logged call is paired with the decrypted request sent on the same upstream connection (in order within that
+connection) and its decrypted length is checked against the gateway's logged length. The key log is deleted the moment
+`labels.json` is written and is never a detector input. The run's home (a copy of the template, about 85 MB for Codex)
+is deleted after the run; the manifest names the template.
 
 A run whose model call the endpoint drops is rerun once; both records are kept, the first flagged, and the rerun is the
-run that counts. A run that stops on an error is set aside and recorded, and the pilot goes on. The cost guard reads
-the DeepSeek balance before the warm-up runs and before every run (and rerun), and stops cleanly when the balance
-cannot be read, is not available, or is at or below the floor (`--balance-floor`, in the first currency DeepSeek
-lists); each run is capped at 300 s, Claude Code also at 12 turns. A stopped pilot is continued with `--resume <time>`,
-which skips every run that already has a manifest. `pilot.json` is rewritten after every run.
+run that counts. A run that stops on an error is set aside and recorded, and the pilot goes on; its folder keeps the
+capture, the call log, the agent output and `labels.json` (when the agent had finished), without the key log or the home
+copy. The cost guard reads the DeepSeek balance before the warm-up runs and before every run (and rerun), and stops
+cleanly when the balance cannot be read, is not available, or is at or below the floor (`--balance-floor`, in the first
+currency DeepSeek lists); each run is capped at 300 s, Claude Code also at 12 turns. A stopped pilot is continued with
+`--resume <time>`, which skips every run that already has a manifest. `pilot.json` is rewritten after every run.
 
 Pilot quality marks, fixed before the run (kept runs: not a flagged first attempt, not a run that stopped on an error):
 Q1 at least 95% of kept runs clean on the wire; Q2 every kept run's labels hold (every model-call request body sent to

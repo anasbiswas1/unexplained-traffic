@@ -8,9 +8,10 @@ host plus the agent's own background channel, which is what a clean benign floor
 a task identical in what they ask the agent to do.
 
 The agents keep their default tool sets next to the four benign MCP tools (word_count, list_dir, read_file,
-write_file, confined to the workspace), so an agent may also read a file with its own tools: Claude Code's Read or a
-read-only Bash command, Codex's shell. pilot.py records every tool call, built-in or MCP, from the agent's own event
-output. The prompts name no tool, except list_dir in one task.
+write_file, confined to the workspace), so an agent may also read and write the workspace with its own tools: Claude
+Code's file tools and its sandboxed Bash, Codex's sandboxed shell. pilot.py records every tool call, built-in or MCP,
+and every permission refusal from the agent's own event output. The prompts name no tool, except list_dir in one
+task.
 
 Each task is a dict:
   id          short unique name, used in the run directory and the manifest
