@@ -1,0 +1,218 @@
+run_id,host,conns,down_raw,down,up_raw,up,agent,kept,flagged_drop
+artifact_log_triage__claude__r1,api.anthropic.com,1,4832,4832,44908,44908,claude,True,False
+artifact_log_triage__claude__r1,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+artifact_log_triage__claude__r2,api.anthropic.com,1,5392,5392,52274,52274,claude,True,False
+artifact_log_triage__claude__r2,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+artifact_log_triage__claude__r3,api.anthropic.com,1,4832,4832,45492,45492,claude,True,False
+artifact_log_triage__claude__r3,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+artifact_log_triage__codex__r1,ab.chatgpt.com,1,5946,5946,621910,620522,codex,True,False
+artifact_log_triage__codex__r1,chatgpt.com,1,5966,5966,1856,1856,codex,True,False
+artifact_log_triage__codex__r1,dns 1.1.1.1,3,435,435,178,178,codex,True,False
+artifact_log_triage__codex__r1,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+artifact_log_triage__codex__r1,github.com,1,40212,40212,997,997,codex,True,False
+artifact_log_triage__codex__r2,ab.chatgpt.com,1,5935,5935,633009,620517,codex,True,False
+artifact_log_triage__codex__r2,chatgpt.com,1,5964,5964,1856,1856,codex,True,False
+artifact_log_triage__codex__r2,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+artifact_log_triage__codex__r2,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+artifact_log_triage__codex__r2,github.com,1,40190,40190,997,997,codex,True,False
+artifact_log_triage__codex__r3,ab.chatgpt.com,1,5942,5942,632999,620507,codex,True,False
+artifact_log_triage__codex__r3,chatgpt.com,1,5955,5955,1878,1878,codex,True,False
+artifact_log_triage__codex__r3,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+artifact_log_triage__codex__r3,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+artifact_log_triage__codex__r3,github.com,1,40214,40214,997,997,codex,True,False
+artifact_notes_rewrite__claude__r1,api.anthropic.com,1,5391,5391,51314,51314,claude,True,False
+artifact_notes_rewrite__claude__r1,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+artifact_notes_rewrite__claude__r2,api.anthropic.com,1,5390,5390,50991,50991,claude,True,False
+artifact_notes_rewrite__claude__r2,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+artifact_notes_rewrite__claude__r3,api.anthropic.com,1,5392,5392,47690,47690,claude,True,False
+artifact_notes_rewrite__claude__r3,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+artifact_notes_rewrite__codex__r1,ab.chatgpt.com,1,5935,5935,626798,626798,codex,True,False
+artifact_notes_rewrite__codex__r1,chatgpt.com,1,5959,5959,1878,1878,codex,True,False
+artifact_notes_rewrite__codex__r1,dns 1.1.1.1,3,435,435,178,178,codex,True,False
+artifact_notes_rewrite__codex__r1,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+artifact_notes_rewrite__codex__r1,github.com,1,40191,40191,997,997,codex,True,False
+artifact_notes_rewrite__codex__r2,ab.chatgpt.com,1,5942,5942,628838,620510,codex,True,False
+artifact_notes_rewrite__codex__r2,chatgpt.com,1,5958,5958,1856,1856,codex,True,False
+artifact_notes_rewrite__codex__r2,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+artifact_notes_rewrite__codex__r2,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+artifact_notes_rewrite__codex__r2,github.com,1,40190,40190,997,997,codex,True,False
+artifact_notes_rewrite__codex__r3,ab.chatgpt.com,1,5944,5944,638655,633103,codex,True,False
+artifact_notes_rewrite__codex__r3,chatgpt.com,1,5966,5966,1878,1878,codex,True,False
+artifact_notes_rewrite__codex__r3,dns 1.1.1.1,3,435,435,178,178,codex,True,False
+artifact_notes_rewrite__codex__r3,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+artifact_notes_rewrite__codex__r3,github.com,1,40199,40199,997,997,codex,True,False
+artifact_sales_summary__claude__r1,api.anthropic.com,2,1026920,1026617,47210,47210,claude,True,False
+artifact_sales_summary__claude__r1,dns 1.1.1.1,2,102,102,70,70,claude,True,False
+artifact_sales_summary__claude__r2,api.anthropic.com,1,5417,5390,53106,53106,claude,True,False
+artifact_sales_summary__claude__r2,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+artifact_sales_summary__claude__r3,api.anthropic.com,2,9660,9660,50133,50133,claude,True,False
+artifact_sales_summary__claude__r3,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+artifact_sales_summary__codex__r1,ab.chatgpt.com,1,5942,5942,620514,620514,codex,True,False
+artifact_sales_summary__codex__r1,chatgpt.com,1,5963,5963,1856,1856,codex,True,False
+artifact_sales_summary__codex__r1,dns 1.1.1.1,3,435,435,178,178,codex,True,False
+artifact_sales_summary__codex__r1,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+artifact_sales_summary__codex__r1,github.com,1,40191,40191,997,997,codex,True,False
+artifact_sales_summary__codex__r2,ab.chatgpt.com,1,5720,5720,628200,626812,codex,True,False
+artifact_sales_summary__codex__r2,chatgpt.com,1,5957,5957,1878,1878,codex,True,False
+artifact_sales_summary__codex__r2,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+artifact_sales_summary__codex__r2,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+artifact_sales_summary__codex__r2,github.com,1,40234,40234,997,997,codex,True,False
+artifact_sales_summary__codex__r3,ab.chatgpt.com,1,5937,5937,626824,626824,codex,True,False
+artifact_sales_summary__codex__r3,chatgpt.com,1,5960,5960,1856,1856,codex,True,False
+artifact_sales_summary__codex__r3,dns 1.1.1.1,3,435,435,178,178,codex,True,False
+artifact_sales_summary__codex__r3,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+artifact_sales_summary__codex__r3,github.com,1,40200,40200,997,997,codex,True,False
+business_order_check__claude__r1,api.anthropic.com,1,4831,4831,39828,39828,claude,True,False
+business_order_check__claude__r1,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+business_order_check__claude__r2,api.anthropic.com,1,4833,4833,39659,39659,claude,True,False
+business_order_check__claude__r2,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+business_order_check__claude__r3,api.anthropic.com,1,4831,4831,39774,39774,claude,True,False
+business_order_check__claude__r3,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+business_order_check__codex__r1,ab.chatgpt.com,1,5717,5717,626832,626832,codex,True,False
+business_order_check__codex__r1,chatgpt.com,1,5959,5959,1878,1878,codex,True,False
+business_order_check__codex__r1,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+business_order_check__codex__r1,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+business_order_check__codex__r1,github.com,1,40211,40211,997,997,codex,True,False
+business_order_check__codex__r2,ab.chatgpt.com,1,5938,5938,614951,614951,codex,True,False
+business_order_check__codex__r2,chatgpt.com,1,5960,5960,1878,1878,codex,True,False
+business_order_check__codex__r2,dns 1.1.1.1,3,435,435,178,178,codex,True,False
+business_order_check__codex__r2,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+business_order_check__codex__r2,github.com,1,40222,40222,997,997,codex,True,False
+business_order_check__codex__r3,ab.chatgpt.com,1,5943,5943,620504,620504,codex,True,False
+business_order_check__codex__r3,chatgpt.com,1,5954,5954,1856,1856,codex,True,False
+business_order_check__codex__r3,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+business_order_check__codex__r3,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+business_order_check__codex__r3,github.com,1,40192,40192,997,997,codex,True,False
+business_support_reply__claude__r1,api.anthropic.com,1,4832,4832,45509,45509,claude,True,False
+business_support_reply__claude__r1,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+business_support_reply__claude__r2,api.anthropic.com,1,5391,5391,47864,47864,claude,True,False
+business_support_reply__claude__r2,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+business_support_reply__claude__r3,api.anthropic.com,1,4832,4832,46334,46334,claude,True,False
+business_support_reply__claude__r3,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+business_support_reply__codex__r1,ab.chatgpt.com,1,5946,5946,626819,626819,codex,True,False
+business_support_reply__codex__r1,chatgpt.com,1,5962,5962,1878,1878,codex,True,False
+business_support_reply__codex__r1,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+business_support_reply__codex__r1,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+business_support_reply__codex__r1,github.com,1,40223,40223,997,997,codex,True,False
+business_support_reply__codex__r2,ab.chatgpt.com,1,5948,5948,627440,620500,codex,True,False
+business_support_reply__codex__r2,chatgpt.com,1,5963,5963,1856,1856,codex,True,False
+business_support_reply__codex__r2,dns 1.1.1.1,3,435,435,178,178,codex,True,False
+business_support_reply__codex__r2,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+business_support_reply__codex__r2,github.com,1,40199,40199,997,997,codex,True,False
+business_support_reply__codex__r3,ab.chatgpt.com,1,5939,5939,644104,620508,codex,True,False
+business_support_reply__codex__r3,chatgpt.com,1,5954,5954,1878,1878,codex,True,False
+business_support_reply__codex__r3,dns 1.1.1.1,3,435,435,178,178,codex,True,False
+business_support_reply__codex__r3,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+business_support_reply__codex__r3,github.com,1,40191,40191,997,997,codex,True,False
+general_primes__claude__r1,api.anthropic.com,1,4833,4833,34586,34586,claude,True,False
+general_primes__claude__r1,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+general_primes__claude__r2,api.anthropic.com,1,4832,4832,33583,33583,claude,True,False
+general_primes__claude__r2,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+general_primes__claude__r3,api.anthropic.com,1,4833,4833,34530,34530,claude,True,False
+general_primes__claude__r3,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+general_primes__codex__r1,ab.chatgpt.com,1,5936,5936,626851,626851,codex,True,False
+general_primes__codex__r1,chatgpt.com,1,5954,5954,1878,1878,codex,True,False
+general_primes__codex__r1,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+general_primes__codex__r1,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+general_primes__codex__r1,github.com,1,40191,40191,997,997,codex,True,False
+general_primes__codex__r2,ab.chatgpt.com,1,5939,5939,620500,620500,codex,True,False
+general_primes__codex__r2,chatgpt.com,1,5959,5959,1878,1878,codex,True,False
+general_primes__codex__r2,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+general_primes__codex__r2,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+general_primes__codex__r2,github.com,1,40192,40192,997,997,codex,True,False
+general_primes__codex__r3,ab.chatgpt.com,1,5938,5938,644123,620499,codex,True,False
+general_primes__codex__r3,chatgpt.com,1,5956,5956,1856,1856,codex,True,False
+general_primes__codex__r3,dns 1.1.1.1,3,435,435,178,178,codex,True,False
+general_primes__codex__r3,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+general_primes__codex__r3,github.com,1,40191,40191,997,997,codex,True,False
+general_water_cycle__claude__r1,api.anthropic.com,2,9665,9665,49998,49998,claude,True,False
+general_water_cycle__claude__r1,dns 1.1.1.1,2,102,102,70,70,claude,True,False
+general_water_cycle__claude__r2,api.anthropic.com,1,4831,4831,34423,34423,claude,True,False
+general_water_cycle__claude__r2,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+general_water_cycle__claude__r3,api.anthropic.com,1,4832,4832,40065,40065,claude,True,False
+general_water_cycle__claude__r3,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+general_water_cycle__codex__r1,ab.chatgpt.com,1,5938,5938,633172,633172,codex,True,False
+general_water_cycle__codex__r1,chatgpt.com,1,5962,5962,1878,1878,codex,True,False
+general_water_cycle__codex__r1,dns 1.1.1.1,3,435,435,178,178,codex,True,False
+general_water_cycle__codex__r1,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+general_water_cycle__codex__r1,github.com,1,40191,40191,997,997,codex,True,False
+general_water_cycle__codex__r2,ab.chatgpt.com,1,5947,5947,620570,620570,codex,True,False
+general_water_cycle__codex__r2,chatgpt.com,1,5962,5962,1878,1878,codex,True,False
+general_water_cycle__codex__r2,dns 1.1.1.1,3,435,435,178,178,codex,True,False
+general_water_cycle__codex__r2,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+general_water_cycle__codex__r2,github.com,1,40199,40199,997,997,codex,True,False
+general_water_cycle__codex__r3,ab.chatgpt.com,1,5935,5935,626903,626903,codex,True,False
+general_water_cycle__codex__r3,chatgpt.com,1,5961,5961,1878,1878,codex,True,False
+general_water_cycle__codex__r3,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+general_water_cycle__codex__r3,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+general_water_cycle__codex__r3,github.com,1,40192,40192,997,997,codex,True,False
+science_claim_check__claude__r1,api.anthropic.com,1,4833,4833,45042,45042,claude,True,False
+science_claim_check__claude__r1,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+science_claim_check__claude__r1__drop1,api.anthropic.com,1,5418,5391,64047,64047,claude,False,True
+science_claim_check__claude__r1__drop1,dns 1.1.1.1,1,51,51,35,35,claude,False,True
+science_claim_check__claude__r2,api.anthropic.com,2,9665,9665,48588,48588,claude,True,False
+science_claim_check__claude__r2,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+science_claim_check__claude__r3,api.anthropic.com,1,4833,4833,45657,45657,claude,True,False
+science_claim_check__claude__r3,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+science_claim_check__codex__r1,ab.chatgpt.com,1,5945,5945,626828,626828,codex,True,False
+science_claim_check__codex__r1,chatgpt.com,1,5955,5955,1878,1878,codex,True,False
+science_claim_check__codex__r1,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+science_claim_check__codex__r1,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+science_claim_check__codex__r1,github.com,1,40221,40221,997,997,codex,True,False
+science_claim_check__codex__r2,ab.chatgpt.com,1,5942,5942,634381,620501,codex,True,False
+science_claim_check__codex__r2,chatgpt.com,1,5959,5959,1878,1878,codex,True,False
+science_claim_check__codex__r2,dns 1.1.1.1,3,435,435,178,178,codex,True,False
+science_claim_check__codex__r2,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+science_claim_check__codex__r2,github.com,1,40222,40222,997,997,codex,True,False
+science_claim_check__codex__r2__drop1,ab.chatgpt.com,1,5941,5941,625748,625748,codex,False,True
+science_claim_check__codex__r2__drop1,chatgpt.com,1,5954,5954,1878,1878,codex,False,True
+science_claim_check__codex__r2__drop1,dns 1.1.1.1,3,454,454,178,178,codex,False,True
+science_claim_check__codex__r2__drop1,dns 8.8.8.8,2,298,298,122,122,codex,False,True
+science_claim_check__codex__r2__drop1,github.com,1,40191,40191,997,997,codex,False,True
+science_claim_check__codex__r3,ab.chatgpt.com,1,5944,5944,620516,620516,codex,True,False
+science_claim_check__codex__r3,chatgpt.com,1,5969,5969,1878,1878,codex,True,False
+science_claim_check__codex__r3,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+science_claim_check__codex__r3,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+science_claim_check__codex__r3,github.com,1,40191,40191,997,997,codex,True,False
+science_cover_crops_synth__claude__r1,api.anthropic.com,1,5393,5393,69273,69273,claude,True,False
+science_cover_crops_synth__claude__r1,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+science_cover_crops_synth__claude__r2,api.anthropic.com,1,5392,5392,57063,57063,claude,True,False
+science_cover_crops_synth__claude__r2,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+science_cover_crops_synth__claude__r3,api.anthropic.com,1,5392,5392,46928,46928,claude,True,False
+science_cover_crops_synth__claude__r3,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+science_cover_crops_synth__codex__r1,ab.chatgpt.com,1,5944,5944,620564,620564,codex,True,False
+science_cover_crops_synth__codex__r1,chatgpt.com,1,5963,5963,1856,1856,codex,True,False
+science_cover_crops_synth__codex__r1,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+science_cover_crops_synth__codex__r1,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+science_cover_crops_synth__codex__r1,github.com,1,40191,40191,997,997,codex,True,False
+science_cover_crops_synth__codex__r2,ab.chatgpt.com,1,5943,5943,632420,632420,codex,True,False
+science_cover_crops_synth__codex__r2,chatgpt.com,1,5950,5950,1878,1878,codex,True,False
+science_cover_crops_synth__codex__r2,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+science_cover_crops_synth__codex__r2,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+science_cover_crops_synth__codex__r2,github.com,1,40191,40191,997,997,codex,True,False
+science_cover_crops_synth__codex__r3,ab.chatgpt.com,1,5719,5719,624741,620577,codex,True,False
+science_cover_crops_synth__codex__r3,chatgpt.com,1,5961,5961,1856,1856,codex,True,False
+science_cover_crops_synth__codex__r3,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+science_cover_crops_synth__codex__r3,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+science_cover_crops_synth__codex__r3,github.com,1,40191,40191,997,997,codex,True,False
+science_evidence_question__claude__r1,api.anthropic.com,1,4832,4832,44953,44953,claude,True,False
+science_evidence_question__claude__r1,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+science_evidence_question__claude__r2,api.anthropic.com,1,4834,4834,45295,45295,claude,True,False
+science_evidence_question__claude__r2,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+science_evidence_question__claude__r3,api.anthropic.com,1,5390,5390,52741,52741,claude,True,False
+science_evidence_question__claude__r3,dns 1.1.1.1,1,51,51,35,35,claude,True,False
+science_evidence_question__codex__r1,ab.chatgpt.com,1,5935,5935,626809,626809,codex,True,False
+science_evidence_question__codex__r1,chatgpt.com,1,5961,5961,1856,1856,codex,True,False
+science_evidence_question__codex__r1,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+science_evidence_question__codex__r1,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+science_evidence_question__codex__r1,github.com,1,40211,40211,997,997,codex,True,False
+science_evidence_question__codex__r2,ab.chatgpt.com,1,5714,5714,620516,620516,codex,True,False
+science_evidence_question__codex__r2,chatgpt.com,1,5959,5959,1878,1878,codex,True,False
+science_evidence_question__codex__r2,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+science_evidence_question__codex__r2,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+science_evidence_question__codex__r2,github.com,1,40191,40191,997,997,codex,True,False
+science_evidence_question__codex__r3,ab.chatgpt.com,1,5729,5729,620531,620531,codex,True,False
+science_evidence_question__codex__r3,chatgpt.com,1,5968,5968,1878,1878,codex,True,False
+science_evidence_question__codex__r3,dns 1.1.1.1,3,454,454,178,178,codex,True,False
+science_evidence_question__codex__r3,dns 8.8.8.8,2,298,298,122,122,codex,True,False
+science_evidence_question__codex__r3,github.com,1,40200,40200,997,997,codex,True,False

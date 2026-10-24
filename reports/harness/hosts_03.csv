@@ -1,0 +1,8 @@
+agent_name,agent,host,runs,conns,up_median,up_min,up_max,down_median,down_max,run_share
+Claude Code 2.1.302,claude,api.anthropic.com,30,34,45995.5,33583,69273,4833.5,1026617,1.0
+Claude Code 2.1.302,claude,dns 1.1.1.1,30,32,35.0,35,70,51.0,102,1.0
+Codex 0.163.0,codex,ab.chatgpt.com,30,30,620547.5,614951,633172,5939.0,5948,1.0
+Codex 0.163.0,codex,chatgpt.com,30,30,1878.0,1856,1878,5960.0,5969,1.0
+Codex 0.163.0,codex,github.com,30,30,997.0,997,997,40192.0,40234,1.0
+Codex 0.163.0,codex,dns 1.1.1.1,30,90,178.0,178,178,454.0,454,1.0
+Codex 0.163.0,codex,dns 8.8.8.8,30,60,122.0,122,122,298.0,298,1.0

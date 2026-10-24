@@ -1,0 +1,28 @@
+split,agent,detector,interrupted,runs,rate,lo,hi
+held-out agent,claude,allowlist,30,30,1.0,0.886486605238548,1.0
+held-out agent,claude,monitor,30,30,1.0,0.886486605238548,1.0
+held-out agent,claude,no_sizes,30,30,1.0,0.886486605238548,1.0
+held-out agent,codex,allowlist,30,30,1.0,0.886486605238548,1.0
+held-out agent,codex,monitor,30,30,1.0,0.886486605238548,1.0
+held-out agent,codex,no_sizes,30,30,1.0,0.886486605238548,1.0
+held-out task,claude,allowlist,0,30,0.0,0.0,0.11351339476145204
+held-out task,claude,monitor,2,30,0.06666666666666667,0.018477023624516822,0.21323458516874166
+held-out task,claude,no_sizes,2,30,0.06666666666666667,0.018477023624516822,0.21323458516874166
+held-out task,codex,allowlist,0,30,0.0,0.0,0.11351339476145204
+held-out task,codex,monitor,0,30,0.0,0.0,0.11351339476145204
+held-out task,codex,no_sizes,1,30,0.03333333333333333,0.005908590316197976,0.16670391146115726
+same distribution,claude,allowlist,0,30,0.0,0.0,0.11351339476145204
+same distribution,claude,monitor,3,30,0.1,0.03459988847741868,0.256210827331743
+same distribution,claude,no_sizes,3,30,0.1,0.03459988847741868,0.256210827331743
+same distribution,codex,allowlist,0,30,0.0,0.0,0.11351339476145204
+same distribution,codex,monitor,0,30,0.0,0.0,0.11351339476145204
+same distribution,codex,no_sizes,0,30,0.0,0.0,0.11351339476145204
+held-out agent,both agents,allowlist,60,60,1.0,0.9398281469657729,1.0
+held-out agent,both agents,monitor,60,60,1.0,0.9398281469657729,1.0
+held-out agent,both agents,no_sizes,60,60,1.0,0.9398281469657729,1.0
+held-out task,both agents,allowlist,0,60,0.0,0.0,0.060171853034227174
+held-out task,both agents,monitor,2,60,0.03333333333333333,0.009189319173450283,0.11363774365849509
+held-out task,both agents,no_sizes,3,60,0.05,0.01714950203090107,0.1370051656999034
+same distribution,both agents,allowlist,0,60,0.0,0.0,0.060171853034227174
+same distribution,both agents,monitor,3,60,0.05,0.01714950203090107,0.1370051656999034
+same distribution,both agents,no_sizes,3,60,0.05,0.01714950203090107,0.1370051656999034

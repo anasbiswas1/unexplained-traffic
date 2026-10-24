@@ -1,0 +1,8 @@
+mark,value,passed
+D1,files True; kept_set True; manifests True; labels True,True
+D2,60/60 kept runs without a testbed fault,True
+D3,upstream_connections 189; missing_links 0; wrong_server_name 0; connections_without_a_call 0; calls_short_of_logged_size 0; unlogged_model_host_connections 0,True
+D4,"0 files (0 too large to scan, reported)",True
+C1,"10 KB 1.000 [1.000, 1.000]; 100 KB 1.000 [1.000, 1.000]",True
+C2,"1 MB 0.000 [0.000, 0.000]; 10 MB 0.000 [0.000, 0.000]",True
+C3,2/60 = 0.0333,True
