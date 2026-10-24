@@ -1,0 +1,224 @@
+[
+ {
+  "check":"P1 task set well formed: 20 tasks, 4 per scenario over 5 scenarios, pilot tasks unchanged, network tasks",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'tasks': 20, 'spread': {'artifact processing': 4, 'business services': 4, 'general knowledge': 4, 'scientific evidence': 4, 'security testing': 4}, 'pilot_tasks_unchanged': True, 'network_tasks': ['artifact_csv_rules', 'business_rate_limit_reply', 'general_rfc_keywords', 'science_trial_spread', 'security_token_review'], 'fetch_hosts_used': ['docs.python.org', 'www.rfc-editor.org'], 'faults_caught': {'moved_scenario': True, 'url_off_allowlist': True, 'network_task_without_fetch_url': True, 'url_in_local_task': True, 'address_outside_documentation_ranges': True, 'url_then_period': True, 'too_few_tasks': True}}"
+ },
+ {
+  "check":"P2 labels: clean run, all model calls agree",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'agreement': 1.0, 'model_pairs': 3, 'ok': True}"
+ },
+ {
+  "check":"P3 labels: one mismatch caught",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'agreement': 0.667, 'mismatch': [(2, 50, 49)]}"
+ },
+ {
+  "check":"P4 labels: overlapping calls on two connections paired by connection",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'pairs': [(500, 500), (300, 300), (1200, 1200)], 'agreement': 1.0}"
+ },
+ {
+  "check":"P5 labels: a call that never reached the endpoint is listed, not counted",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'model_pairs': 3, 'not_on_wire': 1, 'agreement': 1.0}"
+ },
+ {
+  "check":"P6 labels: unpaired request, plain HTTP and two-request frames fail",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'unpaired': 1, 'without_keylog': 1, 'ambiguous': ['24']}"
+ },
+ {
+  "check":"P7 agent tool calls and refusals from event output, odd shapes skipped",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'claude_ok': True, 'codex_ok': True, 'claude_odd_shapes_ok': True, 'codex_odd_shapes_ok': True, 'claude_calls': [('Bash', 'builtin', 55, 30, True, True, None), ('Write', 'builtin', 43, 141, True, True, None), ('mcp__bench__write_file', 'mcp', 34, 7, False, False, None), ('Read', 'builtin', 33, 3, False, False, 'call_09')], 'refusals': [('Bash', 'This command requires approval'), ('Write', 'Claude requested permissions to write to')], 'codex_calls': [('command_execution', 34, 6), ('mcp__bench__read_file', 25, 11), ('file_change', None, None)]}"
+ },
+ {
+  "check":"P7b fetch_url calls from both agents' event output, network flag from the tool log",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'claude': {'calls': [('mcp__bench__fetch_url', 'docs.python.org', True, True, False), ('mcp__bench__fetch_url', 'example.com', False, True, True)], 'network': 1}, 'codex': {'calls': [('mcp__bench__fetch_url', 'docs.python.org', True, True, False), ('mcp__bench__fetch_url', 'example.com', False, True, True)], 'network': 1}, 'string_arguments': ('www.rfc-editor.org', False)}"
+ },
+ {
+  "check":"P8 manifest completeness, model included",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'good': True, 'empty_hosts': False, 'missing_exit': False, 'no_labels': False, 'no_template': False, 'no_model': False}"
+ },
+ {
+  "check":"P9 collection marks: Q1r, Q2, Q4, Q5, Q6, complete set over four dimensions, background reported",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'got': {'all good': True, 'resends in 5 of 20': True, 'testbed fault 1 of 20': True, 'testbed fault 2 of 20': False, 'labels one bad': False, 'completed 18\/20': False, 'fetch check fails once': False, 'background over 1 MB': True, 'one model run missing': False, 'one run twice': False, 'a run with the wrong model': False, 'stopped early': False, 'no template': False, 'flagged and error rows excluded': True}, 'background': [('claude', 'deepseek-flash', 'github.com', 2000000, 1200), ('claude', 'deepseek-flash', 'dns 1.1.1.1', 160, 80), ('codex', 'deepseek-flash', 'github.com', 5, 5)]}"
+ },
+ {
+  "check":"P10 cost guard",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'ok': None, 'at_floor': 'balance 1.0 USD is at or below the floor 1.0', 'not_available': 'DeepSeek reports the balance is not available for API calls', 'no_total': 'the balance reply has no total', 'read_failed': 'balance could not be read (URLError: <urlopen error [Errno 111] Connection refused>)'}"
+ },
+ {
+  "check":"P11 upload refused on a key log or the API key",
+  "where":"offline",
+  "passed":true,
+  "detail":"[\"key logs still present: ['runs\/a\/gw.keys']\", \"API key found in ['runs\/a\/agent_stdout.txt']\"]"
+ },
+ {
+  "check":"P12 resume helpers, model in the manifest and the rebuilt row",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'done_before': False, 'done_after': True, 'set_aside': ['general_rfc_keywords__claude__deepseek-v4-pro__r1__unfinished1', 'general_rfc_keywords__claude__deepseek-v4-pro__r1__unfinished2'], 'home_and_key_log_removed': True, 'same_marks': True, 'background': {'api.anthropic.com': [40000, 9000]}}"
+ },
+ {
+  "check":"P13 stray processes of the pilot stopped, others left alone",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'stopped': 1, 'stray_gone': True, 'other_alive': True}"
+ },
+ {
+  "check":"P14 agent settings: both models for both agents; acceptEdits, sandboxed Bash, fetch_url, no WebFetch",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'claude model settings deepseek-flash': True, 'codex config deepseek-flash': True, 'manifest settings deepseek-flash': True, 'claude model settings deepseek-v4-pro': True, 'codex config deepseek-v4-pro': True, 'manifest settings deepseek-v4-pro': True, 'gate defaults unchanged': True, 'model from the settings, no literal': True, 'permission_mode': True, 'settings_file': True, 'allowed': True, 'disallowed': True, 'sandbox_on': True, 'no_escape': True, 'no_start_without': True, 'no_network': True, 'event_output': True, 'codex_event_output': True, 'fetch_tool_offered': True}"
+ },
+ {
+  "check":"P15 Claude Code sandbox check: user namespace, no network, inside the collection folder",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'missing_socat': 'missing socat; sudo bash harness\/vm_setup.sh installs them', 'userns': 'bubblewrap could not start a sandbox in \/r\/data\/harness\/pilot\/x\/runs: bwrap: setting up uid map: Permission denied; sudo bash harness\/vm_setup.sh sets what it needs', 'chdir': \"bubblewrap could not start a sandbox in \/r\/runs: bwrap: Can't chdir to \/r\/runs: Permission denied; sudo bash harness\/vm_setup.sh sets what it needs\", 'working': 'bubblewrap and socat installed; bubblewrap starts a sandbox with its own user namespace and without network in \/r\/runs', 'command': 'bwrap --ro-bind \/ \/ --dev \/dev --proc \/proc --unshare-user --unshare-net --chdir \/r\/runs true'}"
+ },
+ {
+  "check":"P16 a run stopped after its agent finished keeps capture, call log and labels, not the key log",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'run_dir': 'artifact_sales_summary__claude__r1__error1', 'kept_files': ['agent_stderr.txt', 'agent_stdout.txt', 'claude_settings.json', 'gw_calls.jsonl', 'labels.json', 'net.json', 'run.pcap', 'tools.jsonl'], 'workspace_files': 1, 'capture_kept': True, 'call_log_kept': True, 'labels_kept': True, 'key_log_left': False, 'home_left': False}"
+ },
+ {
+  "check":"P17 fetch_url refuses everything off the allowlist without a connection and logs allowed fetches exactly",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'refused': {'another host': True, 'look-alike host': True, 'trailing dot': True, 'address': True, 'http': True, 'port': True, 'user name': True, 'space in path': True, 'not a string': True, 'missing': True}, 'refused_without_network': True, 'exact': {'fixed length': {'request': True, 'response': True, 'args': True, 'msg': True, 'result': True, 'conn': True, 'tls': True}, 'chunked': {'request': True, 'response': True, 'args': True, 'msg': True, 'result': True, 'conn': True, 'tls': True}, 'redirect': {'request': True, 'response': True, 'args': True, 'msg': True, 'result': True, 'conn': True, 'tls': True}, 'over 1 MB': {'request': True, 'response': True, 'args': True, 'msg': True, 'result': True, 'conn': True, 'tls': True}}, 'texts': {'fixed length': 'HTTP 200\\nsecrets\\nsecrets\\nUse token_urlsafe & compare_digest.', 'chunked': 'HTTP 200\\nsecrets\\nsecrets\\nUse token_urlsafe & compare_digest.', 'redirect': 'HTTP 301: the page moved to https:\/\/docs.python.org\/3\/. fetc', 'over 1 MB': 'HTTP 200\\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}, 'cut': True, 'connection_logged_on_open': True, 'kept_open': {'\/open-length': (0.05, False), '\/open-spaced': (0.05, False), '\/open-other-header': (0.04, False), '\/open-chunked': (0.05, False)}, 'unreadable_length': (False, 'HTTP 200\\nhello\\r\\n'), 'server_still_answers': True, 'logged_after_the_agent_went': True}"
+ },
+ {
+  "check":"P18 fetch calls tied to the capture by address, time and server name (Q6)",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'ok': {'clean': True, 'flow_late': False, 'other_name': False, 'unlogged_flow': False, 'no_flow': False, 'host_off_list': False, 'refused_sent': False, 'port_reused': True, 'connect_before_tls': True, 'no_fetch': True, 'no_fetch_but_flow': False, 'cut_off': True, 'cut_off_no_flow': False}, 'clean_streams': ['1', None, '2'], 'capture_conns': [{'stream': '1', 't': 100.05, 'local': '10.200.51.2:40100', 'remote': '151.101.0.223:443', 'sni': 'docs.python.org'}]}"
+ },
+ {
+  "check":"P19 plan of 400 runs in rounds; --only-task, --only-agent, --only-model smoke options",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'runs': 400, 'first_round': 80, 'smoke': 10, 'bad_values_refused': {\"{'only_task': 'nope'}\": True, \"{'only_agent': 'other'}\": True, \"{'only_model': 'deepseek-chat'}\": True}, 'cli_refusals': {'--only-model deepseek-chat': True, '--only-task nope': True, '--only-agent other': True}, 'passed_to_collection': [('general_rfc_keywords', None, 'deepseek-v4-pro', False), (None, 'codex', None, False), (None, None, None, True)]}"
+ },
+ {
+  "check":"P20 resume across a model boundary: plan kept, no run twice, templates per agent and model, error rows",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'A full plan, stop at flash to pro': True, 'B one task, stop at pro to flash': True, 'C only the pro templates are warmed': True, 'D a finished collection resumes to nothing': True, 'E a row lost after its manifest is rebuilt once': True, 'F an error row is named after its folder and rerun on resume': True, 'G a stop during the warm-ups keeps the plan': True}"
+ },
+ {
+  "check":"P21 Q1r uses the testbed-fault rule of src\/pilot_data",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'pattern_same': True, 'resend_reason': ['5000 upload bytes resent, above the tolerance of 1420 B'], 'faults_kept': ['veth MTU 1500\/1460 is not the uplink MTU 1460', '2 ICMP fragmentation-needed messages (next-hop MTU 1400)', 'captured packet of 9000 B is larger than the MTU', \"capture incomplete {'complete': False}\"]}"
+ },
+ {
+  "check":"P22 vm_setup.sh lifts the user-namespace restriction (kept in sysctl.d) and opens the home with o+x",
+  "where":"offline",
+  "passed":true,
+  "detail":"{'syntax': True, 'block_ran': True, 'home_ox': True, 'setting_written': True, 'setting_loaded': True, 'no_warning': True, 'closed_folder_reported': True, 'test_user': True}"
+ },
+ {
+  "check":"O1 request sizes",
+  "where":"offline",
+  "passed":true,
+  "detail":"15 uploads from 0 B to 1 MB (11 fixed-length, 4 chunked): logged length and upstream bytes exact for 15\/15; path prefix kept True; Host rewritten True"
+ },
+ {
+  "check":"O2 response sizes",
+  "where":"offline",
+  "passed":true,
+  "detail":"8 responses (0 B to 1 MB, fixed-length and chunked) relayed byte for byte and logged exactly: 8\/8"
+ },
+ {
+  "check":"O3 streaming",
+  "where":"offline",
+  "passed":true,
+  "detail":"8 events sent 250 ms apart over 1.75 s; each reached the client 0.3 to 0.4 ms after the endpoint sent it; first event arrived 1.75 s before the last was sent; gateway relayed 8 pieces"
+ },
+ {
+  "check":"O4 connection reuse",
+  "where":"offline",
+  "passed":true,
+  "detail":"5 sequential calls on one client connection used 1 upstream connection; 3 concurrent clients with 3 calls each used 3; every client connection kept a single upstream connection True"
+ },
+ {
+  "check":"O5 reconnect",
+  "where":"offline",
+  "passed":true,
+  "detail":"the endpoint answered with Connection: close and the gateway passed that header to the client (close); upstream close logged True; the client's next call on its kept connection returned 200; upstream connections 2; up_new on the calls [True, False, True]"
+ },
+ {
+  "check":"O6 idle close",
+  "where":"offline",
+  "passed":true,
+  "detail":"the endpoint dropped the kept connection 0.2 s after a call; the client's next call 0.6 s later on the same client connection returned 200; idle close logged True; upstream connections 2; up_new on the two calls [True, True]"
+ },
+ {
+  "check":"O7 client close",
+  "where":"offline",
+  "passed":true,
+  "detail":"client sent Connection: close; gateway closed its upstream connection (agent asked to close); endpoint saw the close True"
+ },
+ {
+  "check":"O8 no-body responses",
+  "where":"offline",
+  "passed":true,
+  "detail":"HEAD 200 with Content-Length 12345 and no body, then 204, then a sized call on the same connection: 200, one upstream connection True"
+ },
+ {
+  "check":"O9 expect-continue",
+  "where":"offline",
+  "passed":true,
+  "detail":"client got 100 Continue from the gateway, sent 50000 bytes, endpoint received 50000, logged 50000"
+ },
+ {
+  "check":"O12 endpoint drop",
+  "where":"offline",
+  "passed":true,
+  "detail":"the endpoint sent 2 of 4 events and dropped the connection; the client got 56 bytes and then a closed connection True; the gateway logged 56 bytes in 2 pieces, error side upstream (IncompleteReadError: 0 bytes read on a total of undefined expected bytes)"
+ },
+ {
+  "check":"O13 agent close",
+  "where":"offline",
+  "passed":true,
+  "detail":"the client closed after the 3rd event, before the end of the stream; the gateway logged 84 bytes, error side agent (ConnectionResetError: Connection lost); upstream connection closed: agent connection failed during the call"
+ },
+ {
+  "check":"O10 TLS key log",
+  "where":"offline",
+  "passed":true,
+  "detail":"HTTPS upstream with verified certificate: sizes [0, 12345, 1000000] logged [0, 12345, 1000000]; one TLS connection True; key log lines ['CLIENT_HANDSHAKE_TRAFFIC_SECRET', 'CLIENT_TRAFFIC_SECRET_0', 'EXPORTER_SECRET', 'SERVER_HANDSHAKE_TRAFFIC_SECRET', 'SERVER_TRAFFIC_SECRET_0']"
+ },
+ {
+  "check":"O14 warm-up hold",
+  "where":"offline",
+  "passed":true,
+  "detail":"first request answered after 1.52 s (file created at 1.5 s), hold released by file; second request 1 ms, not held; with no file and --hold-max 1 the request was answered after 1.01 s, released by timeout; logged sizes [5000, 7, 11]"
+ },
+ {
+  "check":"O11 MCP tool log",
+  "where":"offline",
+  "passed":true,
+  "detail":"initialize, tools\/list and three tools\/call answered; tools ['word_count', 'list_dir', 'read_file', 'write_file', 'fetch_url']; word_count returned 5; args_bytes 39 (expected 39), msg_bytes exact True; path outside the workspace refused True; fetch_url to example.com refused with no bytes sent True (host example.com is not on the allowlist (docs.python.org, www.rfc-editor.org))"
+ }
+]

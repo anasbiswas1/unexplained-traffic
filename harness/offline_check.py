@@ -16,7 +16,8 @@ the VM. Checks:
   O8 no-body responses  HEAD and 204 keep the connection in step
   O9 expect-continue    a client that waits for 100 Continue sends its body and is sized exactly
   O10 TLS key log       an HTTPS upstream works and its session keys reach the key log (needs the openssl command)
-  O11 MCP tool log      tool calls are answered and their argument sizes logged exactly
+  O11 MCP tool log      tool calls are answered and their argument sizes logged exactly; the five tools are listed;
+                        fetch_url refuses a host off its allowlist and logs the refusal with no bytes sent
   O12 endpoint drop     an endpoint that drops a stream inside the body: the log keeps the bytes relayed before the
                         drop and names the upstream side
   O13 agent close       an agent that closes after the last event, before the end of the stream: the log keeps the
@@ -784,7 +785,9 @@ def run_mcp(results, workdir):
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, call,
             {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
-             "params": {"name": "read_file", "arguments": {"path": "../../etc/passwd"}}}]
+             "params": {"name": "read_file", "arguments": {"path": "../../etc/passwd"}}},
+            {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+             "params": {"name": "fetch_url", "arguments": {"url": "https://example.com/"}}}]
     lines = [json.dumps(m).encode() for m in msgs]
     out, _ = p.communicate(b"\n".join(lines) + b"\n", timeout=20)
     replies = [json.loads(x) for x in out.splitlines()]
@@ -792,15 +795,20 @@ def run_mcp(results, workdir):
         recs = [json.loads(x) for x in f]
     tc = [r for r in recs if r["event"] == "tool_call"]
     want_args = len(json.dumps(args, separators=(",", ":"), ensure_ascii=False).encode())
-    ok = (len(replies) == 4 and replies[2]["result"]["content"][0]["text"] == "5"
-          and len(replies[1]["result"]["tools"]) == 4 and len(tc) == 2
+    names = [t["name"] for t in replies[1]["result"]["tools"]] if len(replies) > 1 else []
+    fetch = tc[2].get("fetch") or {} if len(tc) > 2 else {}
+    refused = (len(tc) > 2 and tc[2]["is_error"] is True and bool(fetch.get("refused"))
+               and fetch.get("request_bytes") == 0 and fetch.get("local") is None)
+    ok = (len(replies) == 5 and replies[2]["result"]["content"][0]["text"] == "5"
+          and names == ["word_count", "list_dir", "read_file", "write_file", "fetch_url"] and len(tc) == 3
           and tc[0]["args_bytes"] == want_args and tc[0]["msg_bytes"] == len(lines[3])
-          and tc[0]["result_bytes"] == len(out.splitlines()[2]) and tc[1]["is_error"] is True)
+          and tc[0]["result_bytes"] == len(out.splitlines()[2]) and tc[1]["is_error"] is True and refused)
     check(results, "O11 MCP tool log", ok,
-          f"initialize, tools/list and two tools/call answered; word_count returned "
+          f"initialize, tools/list and three tools/call answered; tools {names}; word_count returned "
           f"{replies[2]['result']['content'][0]['text']}; args_bytes {tc[0]['args_bytes'] if tc else None} "
           f"(expected {want_args}), msg_bytes exact {bool(tc) and tc[0]['msg_bytes'] == len(lines[3])}; "
-          f"path outside the workspace refused {bool(tc) and tc[-1]['is_error']}")
+          f"path outside the workspace refused {len(tc) > 1 and tc[1]['is_error']}; fetch_url to example.com "
+          f"refused with no bytes sent {refused} ({fetch.get('refused')})")
 
 
 # ---------------------------------------------------------------- real agent clients against the fake endpoint
@@ -893,9 +901,11 @@ def run_agent(results, workdir, which):
           f"errors {[r['error'] for r in errors]}")
 
 
-def codex_config(base_url, mcp):
+def codex_config(base_url, mcp, model="deepseek-flash"):
+    """Codex's config.toml: the DeepSeek provider through base_url, the given model, the workspace-write sandbox with
+    approval never and web search disabled, and the bench MCP server with its tools approved."""
     env = ", ".join(f'{k} = "{v}"' for k, v in mcp["env"].items())
-    return (f'model = "deepseek-flash"\n'
+    return (f'model = "{model}"\n'
             f'model_provider = "deepseek"\n'
             f'approval_policy = "never"\n'
             f'sandbox_mode = "workspace-write"\n'

@@ -462,6 +462,14 @@ def model_flows(fl: dict) -> list[dict]:
     return [f for f in fl.values() if f.get("sni") == MODEL_HOST]
 
 
+def claude_model_env(model: str = MODEL) -> dict:
+    """Claude Code's model settings for one DeepSeek model, as DeepSeek's Claude Code guide writes them for
+    deepseek-flash: the main, Opus and Sonnet settings carry the [1m] context marker (Claude Code removes it before
+    sending), the Haiku setting does not. Every setting names the same model, so every call goes to it."""
+    return dict(ANTHROPIC_MODEL=f"{model}[1m]", ANTHROPIC_DEFAULT_OPUS_MODEL=f"{model}[1m]",
+                ANTHROPIC_DEFAULT_SONNET_MODEL=f"{model}[1m]", ANTHROPIC_DEFAULT_HAIKU_MODEL=model)
+
+
 def answered(text: str) -> bool:
     """The one-tool task asks for the word count only; the answer must contain the number 4 and no other number."""
     return re.findall(r"\d+", text or "") == ["4"]
@@ -718,10 +726,10 @@ class Gate:
                                    f"{which}_{mode}")
         return self.agent(which, mode, index, f"{which}_{mode}", template), ""
 
-    def agent(self, which, mode, index, name, template=None, hold=False):
+    def agent(self, which, mode, index, name, template=None, hold=False, model=MODEL):
         """One run of the one-tool task. template: the template home copied into the run's home before the agent
         starts (None for a warm-up from an empty home). hold: warm-up only, hold the first model call at the gateway
-        until the agent's startup work has finished (homes.hold_file)."""
+        until the agent's startup work has finished (homes.hold_file). model: the DeepSeek model the agent uses."""
         import homes
         import netns
         from offline_check import AGENT_PROMPT, MCP, codex_config
@@ -748,10 +756,7 @@ class Gate:
                 cfg = os.path.join(d, "mcp.json")
                 with open(cfg, "w") as f:
                     json.dump({"mcpServers": {"bench": dict(mcp, type="stdio")}}, f)
-                env.update(ANTHROPIC_BASE_URL=base, ANTHROPIC_AUTH_TOKEN=self.key,
-                           ANTHROPIC_MODEL="deepseek-flash[1m]", ANTHROPIC_DEFAULT_OPUS_MODEL="deepseek-flash[1m]",
-                           ANTHROPIC_DEFAULT_SONNET_MODEL="deepseek-flash[1m]",
-                           ANTHROPIC_DEFAULT_HAIKU_MODEL="deepseek-flash")
+                env.update(ANTHROPIC_BASE_URL=base, ANTHROPIC_AUTH_TOKEN=self.key, **claude_model_env(model))
                 cmd = ["claude", "-p", AGENT_PROMPT, "--mcp-config", cfg, "--strict-mcp-config", "--allowedTools",
                        "mcp__bench__word_count", "--output-format", "json", "--max-turns", "6"]
             else:
@@ -761,7 +766,7 @@ class Gate:
                 codex_home = os.path.join(home, ".codex")
                 os.makedirs(codex_home, exist_ok=True)
                 with open(os.path.join(codex_home, "config.toml"), "w") as f:
-                    f.write(codex_config(base, mcp))
+                    f.write(codex_config(base, mcp, model))
                 env.update(CODEX_HOME=codex_home, DEEPSEEK_API_KEY=self.key)
                 cmd = ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-C", ws, "-o",
                        os.path.join(d, "last_message.txt"), AGENT_PROMPT]
@@ -878,33 +883,44 @@ class Gate:
                     dict(direct=sd, gateway=sg, wire_direct=direct["wire"], wire_gateway=gateway["wire"],
                          hosts_direct=direct["hosts"], hosts_gateway=gateway["hosts"]))
 
+    def warm_home(self, which, index, rerun_index, model=None):
+        """One warm-up run of one agent from an empty home, saved as a template home. model None: the gate's template
+        for the agent version, made with MODEL; a model name: the collection's template for that agent version and
+        model, made with that model. Returns (template or None, report line, data)."""
+        import homes
+        version = homes.agent_version(which)
+        use = model or MODEL
+        tag = f"warmup_{which}" + (f"_{model}" if model else "")
+        r, note = self.with_rerun(lambda idx, name: self.agent(which, "gateway", idx, name, None, hold=True,
+                                                               model=use), index, rerun_index, tag)
+        hold = r["holds"][0] if r["holds"] else None
+        line = (f"{which} {version}" + (f" {model}" if model else "")
+                + f": warm-up exit {r['exit']} in {r['seconds']} s, answer {r['answer'][-20:]!r}"
+                + (f", first model call held {hold['waited']} s, released by {hold['released']}" if hold else "")
+                + (f" ({note})" if note else "") + f"; bytes per host: {describe_hosts(r['hosts'])}")
+        try:
+            if r["exit"] != 0 or not answered(r["answer"]) or r["drops"]:
+                raise RuntimeError("the warm-up run did not complete")
+            dest = homes.save_template(r["home"], HOMES_ROOT, which, version,
+                                       dict(warmup_run=os.path.relpath(os.path.dirname(r["home"]), self.out),
+                                            warmup_hosts=r["hosts"], warmup_hold=hold, warmup_model=use), self.key,
+                                       model=model)
+            t = homes.load_template(HOMES_ROOT, which, version, model=model)
+            line += f"; template {os.path.relpath(dest, REPO)} ({t['home_bytes']:,} B)" + (
+                f", Codex plugin catalogue {(t['codex_plugins']['sha'] or 'none')[:12]} "
+                f"({t['codex_plugins']['repo_bytes']:,} B)" if which == "codex" else "")
+            return t, line, dict(template=t, warmup_hosts=r["hosts"], hold=hold)
+        except Exception as e:
+            line += f"; NOT SAVED: {e}"
+            return None, line, dict(error=str(e), warmup_hosts=r["hosts"], hold=hold)
+
     def warm_homes(self) -> dict:
         """H1: one warm-up run per agent from an empty home, saved as that agent version's template home."""
-        import homes
         made, lines, data = {}, [], {}
         for i, which in enumerate(("claude", "codex")):
-            version = homes.agent_version(which)
-            r, note = self.with_rerun(lambda idx, name: self.agent(which, "gateway", idx, name, None, hold=True),
-                                      31 + i, 41 + i, f"warmup_{which}")
-            hold = r["holds"][0] if r["holds"] else None
-            line = (f"{which} {version}: warm-up exit {r['exit']} in {r['seconds']} s, answer {r['answer'][-20:]!r}"
-                    + (f", first model call held {hold['waited']} s, released by {hold['released']}" if hold else "")
-                    + (f" ({note})" if note else "") + f"; bytes per host: {describe_hosts(r['hosts'])}")
-            try:
-                if r["exit"] != 0 or not answered(r["answer"]) or r["drops"]:
-                    raise RuntimeError("the warm-up run did not complete")
-                dest = homes.save_template(r["home"], HOMES_ROOT, which, version,
-                                           dict(warmup_run=os.path.relpath(os.path.dirname(r["home"]), self.out),
-                                                warmup_hosts=r["hosts"], warmup_hold=hold), self.key)
-                t = homes.load_template(HOMES_ROOT, which, version)
+            t, line, data[which] = self.warm_home(which, 31 + i, 41 + i)
+            if t:
                 made[which] = t["home"]
-                line += f"; template {os.path.relpath(dest, REPO)} ({t['home_bytes']:,} B)" + (
-                    f", Codex plugin catalogue {t['codex_plugins']['sha'][:12]} "
-                    f"({t['codex_plugins']['repo_bytes']:,} B)" if which == "codex" else "")
-                data[which] = dict(template=t, warmup_hosts=r["hosts"], hold=hold)
-            except Exception as e:
-                line += f"; NOT SAVED: {e}"
-                data[which] = dict(error=str(e), warmup_hosts=r["hosts"], hold=hold)
             lines.append(line)
         self.record("H1 warm homes", len(made) == 2, " | ".join(lines), data)
         return made

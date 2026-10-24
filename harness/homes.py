@@ -1,5 +1,8 @@
-"""Warm agent homes: one template home per agent version, copied (never shared) into each run's home before the agent
-starts, so that every benign run is a returning user with a warm home, not a first launch.
+"""Warm agent homes: template homes, copied (never shared) into each run's home before the agent starts, so that every
+benign run is a returning user with a warm home, not a first launch. The gate keeps one template per agent version;
+the collection keeps one per agent version and model, because Claude Code keeps a cache entry per model in its home
+(clientDataCacheSlots in .claude.json, one entry per model), so a run on one model from a home warmed on another
+would start on a cache miss.
 
 A template is made by one trivial task run of the agent through the gateway, in its own run namespace, from an empty
 home, and saved only when the home is complete:
@@ -12,7 +15,8 @@ home, and saved only when the home is complete:
     template is made fresh at the start of each gate or collection session.
   - Claude Code needs no hold.
   - No file in the template may contain the API key.
-Templates live under data/harness/homes/<agent>-<version>/ (git-ignored): home/ and manifest.json.
+Templates live under data/harness/homes/<agent>-<version>/ (the gate) or <agent>-<version>-<model>/ (the collection),
+git-ignored: home/ and manifest.json.
 """
 from __future__ import annotations
 
@@ -38,8 +42,8 @@ def agent_version(agent: str) -> str:
     return parse_version(out.stdout + out.stderr)
 
 
-def template_dir(root: str, agent: str, version: str) -> str:
-    return os.path.join(root, f"{agent}-{version}")
+def template_dir(root: str, agent: str, version: str, model: str | None = None) -> str:
+    return os.path.join(root, f"{agent}-{version}" + (f"-{model}" if model else ""))
 
 
 def tree_bytes(path: str) -> int:
@@ -105,17 +109,19 @@ def template_problems(agent: str, home: str, secret: str) -> list[str]:
     return problems
 
 
-def save_template(run_home: str, root: str, agent: str, version: str, manifest: dict, secret: str) -> str:
-    """Copies a warm-up run's home to the template folder, replacing any older template of the same version."""
+def save_template(run_home: str, root: str, agent: str, version: str, manifest: dict, secret: str,
+                  model: str | None = None) -> str:
+    """Copies a warm-up run's home to the template folder, replacing any older template of the same version (and
+    model, for a collection template)."""
     problems = template_problems(agent, run_home, secret)
     if problems:
         raise RuntimeError(f"{agent} {version} home not saved: {'; '.join(problems)}")
-    dest = template_dir(root, agent, version)
+    dest = template_dir(root, agent, version, model)
     staging = dest + ".new"
     shutil.rmtree(staging, ignore_errors=True)
     os.makedirs(staging)
     shutil.copytree(run_home, os.path.join(staging, "home"), symlinks=True)
-    meta = dict(manifest, agent=agent, version=version, saved=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    meta = dict(manifest, agent=agent, version=version, model=model, saved=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 home_bytes=tree_bytes(os.path.join(staging, "home")))
     if agent == "codex":
         meta["codex_plugins"] = codex_sync_state(os.path.join(staging, "home"))
@@ -126,8 +132,8 @@ def save_template(run_home: str, root: str, agent: str, version: str, manifest: 
     return dest
 
 
-def load_template(root: str, agent: str, version: str) -> dict:
-    dest = template_dir(root, agent, version)
+def load_template(root: str, agent: str, version: str, model: str | None = None) -> dict:
+    dest = template_dir(root, agent, version, model)
     with open(os.path.join(dest, "manifest.json")) as f:
         meta = json.load(f)
     return dict(meta, path=dest, home=os.path.join(dest, "home"))
