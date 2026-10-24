@@ -286,3 +286,40 @@ PASS  U14 template checks: {'with_key': ["API key found in ['.codex/auth.json']"
 PASS  U15 template save and private copy: {'template': '/tmp/u_homes_ahxc0g29/templates/codex-0.163.0', 'private_copy': True, 'second_copy_refused': True}
 PASS  U16 agent version: ['2.1.302', '0.163.0']
 ```
+
+
+---
+## 02e benign collection pilot: Colab-side checks
+_2026-10-24 00:25_
+
+```
+DECISION: PASS (Colab-side checks: pilot logic P1-P13 and the existing harness offline checks O1-O14. The 60 benign runs, captures, wire verdict, per-run key-log labels, bytes per host and the pilot quality marks Q1-Q5 run on the VM in harness/pilot.py.)
+
+PASS  P1 task set well formed: {'tasks': 10, 'spread': {'artifact processing': 3, 'business services': 2, 'general knowledge': 2, 'scientific evidence': 3}, 'moved_task_caught': True}
+PASS  P2 labels: clean run, all model calls agree: {'agreement': 1.0, 'model_pairs': 3, 'ok': True}
+PASS  P3 labels: one mismatch caught: {'agreement': 0.667, 'mismatch': [(2, 50, 49)]}
+PASS  P4 labels: overlapping calls on two connections paired by connection: {'pairs': [(500, 500), (300, 300), (1200, 1200)], 'agreement': 1.0}
+PASS  P5 labels: a call that never reached the endpoint is listed, not counted: {'model_pairs': 3, 'not_on_wire': 1, 'agreement': 1.0}
+PASS  P6 labels: unpaired request, plain HTTP and two-request frames fail: {'unpaired': 1, 'without_keylog': 1, 'ambiguous': ['24']}
+PASS  P7 agent tool calls from event output: {'claude': [{'tool': 'Read', 'source': 'builtin', 'id': 't1', 'parent': None, 'input_bytes': 33, 'output_bytes': 3, 'is_error': False}, {'tool': 'mcp__bench__write_file', 'source': 'mcp', 'id': 't2', 'parent': None, 'input_bytes': 35, 'output_bytes': 2, 'is_error': False}, {'tool': 'Bash', 'source': 'builtin', 'id': 't3', 'parent': 't9', 'input_bytes': 16, 'output_bytes': 6, 'is_error': True}], 'codex': [{'tool': 'command_execution', 'source': 'builtin', 'id': 'i1', 'parent': None, 'input_bytes': 21, 'output_bytes': 6, 'is_error': False}, {'tool': 'mcp__bench__write_file', 'source': 'mcp', 'id': 'i2', 'parent': None, 'input_bytes': 34, 'output_bytes': 7, 'is_error': False}, {'tool': 'file_change', 'source': 'builtin', 'id': 'i3', 'parent': None, 'input_bytes': None, 'output_bytes': None, 'is_error': False}], 'codex_error': 'stream ended'}
+PASS  P8 manifest completeness: {'good': True, 'empty_hosts': False, 'missing_exit': False, 'no_labels': False, 'no_template': False}
+PASS  P9 quality marks and complete set: {'all good': True, 'wire 19/20': True, 'wire 18/20': False, 'labels one bad': False, 'background in flagged attempt': False, 'completed 18/20': False, 'one run missing': False, 'stopped early': False, 'no template': False, 'flagged and error rows excluded': True}
+PASS  P10 cost guard: {'ok': None, 'at_floor': 'balance 1.0 USD is at or below the floor 1.0', 'not_available': 'DeepSeek reports the balance is not available for API calls', 'no_total': 'the balance reply has no total', 'read_failed': 'balance could not be read (URLError: <urlopen error [Errno 111] Connection refused>)'}
+PASS  P11 upload refused on a key log or the API key: ["key logs still present: ['runs/a/gw.keys']", "API key found in ['runs/a/agent_stdout.txt']"]
+PASS  P12 resume helpers: {'done_before': False, 'done_after': True, 'set_aside': ['x__claude__r1__unfinished1', 'x__claude__r1__unfinished2'], 'home_and_key_log_removed': True, 'same_marks': True}
+PASS  P13 stray processes of the pilot stopped, others left alone: {'stopped': 1, 'stray_gone': True, 'other_alive': True}
+PASS  O1 request sizes: 15 uploads from 0 B to 1 MB (11 fixed-length, 4 chunked): logged length and upstream bytes exact for 15/15; path prefix kept True; Host rewritten True
+PASS  O2 response sizes: 8 responses (0 B to 1 MB, fixed-length and chunked) relayed byte for byte and logged exactly: 8/8
+PASS  O3 streaming: 8 events sent 250 ms apart over 1.75 s; each reached the client 0.2 to 0.5 ms after the endpoint sent it; first event arrived 1.75 s before the last was sent; gateway relayed 8 pieces
+PASS  O4 connection reuse: 5 sequential calls on one client connection used 1 upstream connection; 3 concurrent clients with 3 calls each used 3; every client connection kept a single upstream connection True
+PASS  O5 reconnect: the endpoint answered with Connection: close and the gateway passed that header to the client (close); upstream close logged True; the client's next call on its kept connection returned 200; upstream connections 2; up_new on the calls [True, False, True]
+PASS  O6 idle close: the endpoint dropped the kept connection 0.2 s after a call; the client's next call 0.6 s later on the same client connection returned 200; idle close logged True; upstream connections 2; up_new on the two calls [True, True]
+PASS  O7 client close: client sent Connection: close; gateway closed its upstream connection (agent asked to close); endpoint saw the close True
+PASS  O8 no-body responses: HEAD 200 with Content-Length 12345 and no body, then 204, then a sized call on the same connection: 200, one upstream connection True
+PASS  O9 expect-continue: client got 100 Continue from the gateway, sent 50000 bytes, endpoint received 50000, logged 50000
+PASS  O12 endpoint drop: the endpoint sent 2 of 4 events and dropped the connection; the client got 56 bytes and then a closed connection True; the gateway logged 56 bytes in 2 pieces, error side upstream (IncompleteReadError: 0 bytes read on a total of undefined expected bytes)
+PASS  O13 agent close: the client closed after the 3rd event, before the end of the stream; the gateway logged 84 bytes, error side agent (ConnectionResetError: [Errno 104] Connection reset by peer); upstream connection closed: agent connection failed during the call
+PASS  O10 TLS key log: HTTPS upstream with verified certificate: sizes [0, 12345, 1000000] logged [0, 12345, 1000000]; one TLS connection True; key log lines ['CLIENT_HANDSHAKE_TRAFFIC_SECRET', 'CLIENT_TRAFFIC_SECRET_0', 'EXPORTER_SECRET', 'SERVER_HANDSHAKE_TRAFFIC_SECRET', 'SERVER_TRAFFIC_SECRET_0']
+PASS  O14 warm-up hold: first request answered after 1.51 s (file created at 1.5 s), hold released by file; second request 1 ms, not held; with no file and --hold-max 1 the request was answered after 1.01 s, released by timeout; logged sizes [5000, 7, 11]
+PASS  O11 MCP tool log: initialize, tools/list and two tools/call answered; word_count returned 5; args_bytes 39 (expected 39), msg_bytes exact True; path outside the workspace refused True
+```
